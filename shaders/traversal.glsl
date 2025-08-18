@@ -37,6 +37,7 @@ void TraversalMetric_setSphere(inout TraversalMetric metric, vec3 sphere)
 // returns true if error is over threshold ("coarse enough")
 bool testForTraversal(mat4x3 instanceToEye, float uniformScale, TraversalMetric metric, float errorScale)
 {
+  return true;
   vec3  boundingSpherePos = vec3(metric.boundingSphereX, metric.boundingSphereY, metric.boundingSphereZ);
   float minDistance       = view.nearPlane;
   float sphereDistance    = length(vec3(instanceToEye * vec4(boundingSpherePos, 1.0f)));
@@ -50,6 +51,7 @@ bool testForTraversal(mat4x3 instanceToEye, float uniformScale, TraversalMetric 
 // variant of the above, assumes world space for view position and metric sphere position
 bool testForTraversal(vec3 wViewPos, float uniformScale, TraversalMetric metric, float errorScale)
 {
+  return true;
   vec3  boundingSpherePos = vec3(metric.boundingSphereX, metric.boundingSphereY, metric.boundingSphereZ);
   float minDistance       = view.nearPlane;
   float sphereDistance    = length(wViewPos - boundingSpherePos);

@@ -43,6 +43,8 @@
 #include <nvutils/parameter_parser.hpp>
 
 #include "lodclusters.hpp"
+#include "scene.hpp"
+#include <filesystem>
 
 using namespace lodclusters;
 
@@ -90,9 +92,15 @@ int main(int argc, char** argv)
   nvutils::ParameterRegistry parameterRegistry;
   nvutils::ParameterParser   parameterParser;
 
+  // Add local variables that we can access directly
+  bool processingOnly = false;
+  std::filesystem::path sceneFilePath;
+
   parameterRegistry.add({"validation"}, &vkSetup.enableValidationLayers);
   parameterRegistry.add({"vsync"}, &appInfo.vSync);
   parameterRegistry.add({"device", "force a vulkan device via index into the device list"}, &vkSetup.forceGPU);
+  parameterRegistry.add({"processingonly", "directly terminate app once cache file was saved. default false"}, &processingOnly);
+  parameterRegistry.add({"scene"}, {".gltf", ".glb"}, &sceneFilePath);
 
   LodClusters::Info sampleInfo;
   sampleInfo.cameraManipulator               = cameraManipulator;
@@ -102,6 +110,81 @@ int main(int argc, char** argv)
 
   parameterParser.add(parameterRegistry);
   parameterParser.parse(argc, argv);
+
+  // Check if we're in processing-only mode to skip Vulkan initialization
+  
+  if (processingOnly) {
+    LOGI("Running in processing-only mode, skipping Vulkan initialization...\n");
+    
+    // Create Scene configuration from parameters
+    lodclusters::SceneConfig sceneConfig;
+    sceneConfig.processingOnly = true;
+    sceneConfig.clusterVertices = 64;
+    sceneConfig.clusterTriangles = 64; 
+    sceneConfig.clusterGroupSize = 32;
+    sceneConfig.lodLevelDecimationFactor = 0.5f;
+    sceneConfig.clusterStripify = true;
+    sceneConfig.processingThreadsPct = 0.5f;
+    sceneConfig.autoSaveCache = true;
+    sceneConfig.autoLoadCache = true;
+    sceneConfig.memoryMappedCache = false;
+    
+    // Create a Scene object and process the specified file
+    lodclusters::Scene scene;
+    std::filesystem::path inputPath;
+    
+    // Check if user specified a scene file
+    if (!sceneFilePath.empty()) {
+        // User specified a file path
+        inputPath = sceneFilePath;
+        if (!std::filesystem::exists(inputPath)) {
+            LOGE("Specified scene file does not exist: %s\n", inputPath.string().c_str());
+            return -1;
+        }
+    } else {
+        // No file specified, try to find the default bunny file
+        std::filesystem::path bunnyPath = "resources/bunny_v2/bunny.gltf";
+        
+        const std::vector<std::filesystem::path> searchPaths = {
+            std::filesystem::absolute(std::filesystem::current_path() / "_downloaded_resources"),
+            std::filesystem::absolute(std::filesystem::current_path() / "resources"),
+            std::filesystem::absolute(std::filesystem::current_path() / "../resources"),
+            std::filesystem::absolute(std::filesystem::current_path() / "downloads")
+        };
+        
+        bool foundBunny = false;
+        for (const auto& searchPath : searchPaths) {
+            auto fullPath = searchPath / "bunny_v2" / "bunny.gltf";
+            if (std::filesystem::exists(fullPath)) {
+                inputPath = fullPath;
+                foundBunny = true;
+                break;
+            }
+        }
+        
+        if (!foundBunny) {
+            LOGE("No scene file specified and could not find default bunny.gltf in standard locations\n");
+            LOGE("Usage: %s --processingonly 1 --scene /path/to/your/model.gltf\n", argv[0]);
+            return -1;
+        }
+    }
+    
+    LOGI("Processing: %s\n", inputPath.string().c_str());
+    
+    // Initialize the scene - this will do all the CPU mesh processing
+    bool success = scene.init(inputPath, sceneConfig, false);
+    
+    if (success) {
+        LOGI("Mesh processing completed successfully\n");
+    } else {
+        LOGE("Mesh processing failed\n");
+    }
+    
+    // Clean up
+    scene.deinit();
+    
+    return success ? 0 : -1;
+  }
 
   nvvk::ValidationSettings validationSettings;
   if(vkSetup.enableValidationLayers)

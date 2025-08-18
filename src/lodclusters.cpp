@@ -394,11 +394,13 @@ void LodClusters::onAttach(nvapp::Application* app)
         std::filesystem::absolute(exeDirectoryPath / "resources"),
     };
 
-    m_sceneFilePath = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
-
+    // m_sceneFilePath = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
+    m_sceneFilePath = nvutils::findFile("matrix_city_new.glb", defaultSearchPaths);
     // enforce unique geometries in the sample scene
     m_sceneGridConfig.uniqueGeometriesForCopies = true;
 
+    // Comment out the automatic grid setup to respect user's --gridcopies parameter
+    /*
     if(m_sceneGridConfig.numCopies == 1)
     {
       if(m_resources.getDeviceLocalHeapSize() >= 8ull * 1024 * 1024 * 1024)
@@ -410,6 +412,7 @@ void LodClusters::onAttach(nvapp::Application* app)
         m_sceneGridConfig.numCopies = 64;
       }
     }
+    */
   }
 
   if(m_resources.getDeviceLocalHeapSize() >= 8ull * 1024 * 1024 * 1024)

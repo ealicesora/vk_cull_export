@@ -486,6 +486,10 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
 {
   GeometryStorage& geometryStorage = m_geometryStorages[geometryIndex];
   GeometryView&    geometryView    = m_geometryViews[geometryIndex];
+  
+  // Show progress for current geometry being processed
+  LOGI("  Processing geometry %zu/%zu %s\n", geometryIndex + 1, processingInfo.geometryCount, 
+       isCached ? "(cached)" : "(new)");
 
   bool viewFromStorage = true;
 
@@ -520,14 +524,17 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
 
       if(m_config.clusterStripify)
       {
+        LOGI("    Building cluster strips...\n");
         buildGeometryClusterStrips(processingInfo, geometryStorage);
       }
 
+      LOGI("    Building cluster vertices...\n");
       buildGeometryClusterVertices(processingInfo, geometryStorage);
 
       // no longer need vertex indirection
       geometryStorage.localVertices = {};
 
+      LOGI("    Building bounding boxes...\n");
       buildGeometryBboxes(processingInfo, geometryStorage);
     }
   }
@@ -577,13 +584,29 @@ void Scene::buildGeometryClusters(const ProcessingInfo& processingInfo, Geometry
   geometry.lodInfo.inputTriangleIndicesHash = 0;
   geometry.lodInfo.inputVerticesHash        = 0;
 
+  // Add progress reporting for mesh clustering
+  LOGI("    Processing mesh: %d triangles, %d vertices -> meshoptimizer clustering...\n", 
+       lodMeshInput.triangleCount, lodMeshInput.vertexCount);
+  
+  nvutils::PerformanceTimer meshTimer;
+  double meshStartTime = meshTimer.getMicroseconds();
+  
   result = nvclusterlod::generateLodMesh(processingInfo.lodContext, lodMeshInput, geometry.lodMesh);
+  
+  double meshEndTime = meshTimer.getMicroseconds();
+  LOGI("    Mesh clustering completed: %.2f seconds\n", (meshEndTime - meshStartTime) / 1000000.0);
+  
   if(result != NVCLUSTERLOD_SUCCESS)
   {
     assert(0);
     LOGE("nvclusterlod::generateLodMesh failed: %d\n", result);
     std::exit(-1);
   }
+  
+  // Report LOD generation results
+  LOGI("    Generated %zu clusters, %zu LOD levels\n", 
+       geometry.lodMesh.clusterTriangleRanges.size(),
+       geometry.lodMesh.lodLevelGroupRanges.size());
 
   // vectors are resized at end of lod processing,
   // but might still occupy a lot of memory
