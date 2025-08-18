@@ -11,6 +11,7 @@ option(NVPRO2_ENABLE_nvvkgltf OFF)
 # Add the cmake folder to the module path
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(NvproCore2 REQUIRED)
+find_package(Threads REQUIRED)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 set(CMAKE_CXX_STANDARD 20)
@@ -54,6 +55,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
   nv_cluster_lod_builder
   meshoptimizer
   cgltf
+  Threads::Threads
 )
 
 #####################################################################################

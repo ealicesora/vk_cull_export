@@ -56,8 +56,10 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"loderror"}, &m_frameConfig.lodPixelError);
   m_info.parameterRegistry->add({"cullederrorscale"}, &m_frameConfig.culledErrorScale);
   m_info.parameterRegistry->add({"culling"}, &m_rendererConfig.useCulling);
+#if USE_DLSS
   m_info.parameterRegistry->add({"dlss"}, &m_rendererConfig.useDlss);
   m_info.parameterRegistry->add({"dlssquality"}, (int*)&m_rendererConfig.dlssQuality);
+#endif
   m_info.parameterRegistry->add({"blassharing"}, &m_rendererConfig.useBlasSharing);
   m_info.parameterRegistry->add({"separategroups"}, &m_rendererConfig.useSeparateGroups);
   m_info.parameterRegistry->add({"sharingmininstances"}, &m_frameConfig.sharingMinInstances);

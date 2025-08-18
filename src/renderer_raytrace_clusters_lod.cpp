@@ -133,7 +133,11 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_BLAS_SHARING", config.useBlasSharing ? "1" : "0");
   options.AddMacroDefinition("USE_RENDER_STATS", config.useRenderStats ? "1" : "0");
   options.AddMacroDefinition("USE_SEPARATE_GROUPS", config.useSeparateGroups ? "1" : "0");
+#if USE_DLSS
   options.AddMacroDefinition("USE_DLSS", config.useDlss ? "1" : "0");
+#else
+  options.AddMacroDefinition("USE_DLSS", "0");
+#endif
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization ? "1" : "0");
 
   shaderc::CompileOptions optionsAO = options;
