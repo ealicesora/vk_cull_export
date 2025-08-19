@@ -20,9 +20,6 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
-#include <nvvk/context_vk.hpp>
-#include <nvvk/buffer_vk.hpp>
-#include <nvvk/image_vk.hpp>
 #include <string>
 #include <vector>
 #include <memory>
@@ -51,7 +48,7 @@ public:
   ExternalMemoryManager() = default;
   ~ExternalMemoryManager();
 
-  bool init(const nvvk::Context& ctx, const ExternalMemoryConfig& config);
+  bool init(VkDevice device, VkPhysicalDevice physicalDevice, const ExternalMemoryConfig& config);
   void deinit();
 
   // Create exportable resources
@@ -79,7 +76,7 @@ public:
   VkSemaphore getCameraSemaphore() const { return m_cameraSemaphore; }
   VkSemaphore getFrameDoneSemaphore() const { return m_frameDoneSemaphore; }
   
-  bool isConnected() const { return m_clientSocket >= 0; }
+  bool isConnected() const;  // Check if client is still connected
   uint32_t getWidth() const { return m_config.width; }
   uint32_t getHeight() const { return m_config.height; }
   VkFormat getFormat() const { return m_config.format; }
@@ -96,7 +93,8 @@ public:
   }
 
 private:
-  const nvvk::Context* m_ctx = nullptr;
+  VkDevice m_device = VK_NULL_HANDLE;
+  VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
   ExternalMemoryConfig m_config;
 
   // Exportable resources

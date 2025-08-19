@@ -17,16 +17,31 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
+#include <volk.h>  // Must be included before any Vulkan headers for function loading
 #include "external_memory.hpp"
-#include <nvvk/debug_util_vk.hpp>
-#include <nvutils/logging.hpp>
-#include "../shaders/shaderio.h"
+#include <cstdio>
+#include <cstring>
+
+// Simple logging macros
+#define LOGI(...) printf("[INFO] " __VA_ARGS__)
+#define LOGE(...) printf("[ERROR] " __VA_ARGS__)
+
+// Size of FrameConstants structure from shaderio.h
+// We define this manually to avoid including the shader headers
+static const size_t FRAME_CONSTANTS_SIZE = sizeof(float) * (16 * 7 + 4 * 9 + 3 * 2 + 2 * 4 + 1 * 4 + 20);
 
 #ifndef _WIN32
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <nlohmann/json.hpp>
+#include <unistd.h>
+#include <cstring>
+#include <errno.h>
+#include <fcntl.h>
 #endif
+
+// Use simple JSON implementation instead of nlohmann
+#include <sstream>
+#include <iomanip>
 
 namespace lodclusters {
 
@@ -34,8 +49,9 @@ ExternalMemoryManager::~ExternalMemoryManager() {
   deinit();
 }
 
-bool ExternalMemoryManager::init(const nvvk::Context& ctx, const ExternalMemoryConfig& config) {
-  m_ctx = &ctx;
+bool ExternalMemoryManager::init(VkDevice device, VkPhysicalDevice physicalDevice, const ExternalMemoryConfig& config) {
+  m_device = device;
+  m_physicalDevice = physicalDevice;
   m_config = config;
   
   if (!m_config.enabled) {
@@ -53,7 +69,7 @@ bool ExternalMemoryManager::init(const nvvk::Context& ctx, const ExternalMemoryC
   }
 
   // Create exportable buffers and semaphores
-  VkDeviceSize cameraBufferSize = sizeof(shaderio::FrameConstants);
+  VkDeviceSize cameraBufferSize = FRAME_CONSTANTS_SIZE;
   VkDeviceSize colorBufferSize = m_config.width * m_config.height * 4; // R8G8B8A8_UNORM
 
   LOGI("Creating camera buffer (size: %zu bytes)\n", cameraBufferSize);
@@ -93,7 +109,7 @@ bool ExternalMemoryManager::init(const nvvk::Context& ctx, const ExternalMemoryC
 }
 
 void ExternalMemoryManager::deinit() {
-  if (m_ctx == nullptr) return;
+  if (m_device == VK_NULL_HANDLE) return;
 
   // Close client socket
   if (m_clientSocket >= 0) {
@@ -111,31 +127,32 @@ void ExternalMemoryManager::deinit() {
 
   // Destroy Vulkan resources
   if (m_cameraBuffer != VK_NULL_HANDLE) {
-    vkDestroyBuffer(m_ctx->m_device, m_cameraBuffer, nullptr);
+    vkDestroyBuffer(m_device, m_cameraBuffer, nullptr);
     m_cameraBuffer = VK_NULL_HANDLE;
   }
   if (m_cameraMemory != VK_NULL_HANDLE) {
-    vkFreeMemory(m_ctx->m_device, m_cameraMemory, nullptr);
+    vkFreeMemory(m_device, m_cameraMemory, nullptr);
     m_cameraMemory = VK_NULL_HANDLE;
   }
   if (m_colorReadbackBuffer != VK_NULL_HANDLE) {
-    vkDestroyBuffer(m_ctx->m_device, m_colorReadbackBuffer, nullptr);
+    vkDestroyBuffer(m_device, m_colorReadbackBuffer, nullptr);
     m_colorReadbackBuffer = VK_NULL_HANDLE;
   }
   if (m_colorReadbackMemory != VK_NULL_HANDLE) {
-    vkFreeMemory(m_ctx->m_device, m_colorReadbackMemory, nullptr);
+    vkFreeMemory(m_device, m_colorReadbackMemory, nullptr);
     m_colorReadbackMemory = VK_NULL_HANDLE;
   }
   if (m_cameraSemaphore != VK_NULL_HANDLE) {
-    vkDestroySemaphore(m_ctx->m_device, m_cameraSemaphore, nullptr);
+    vkDestroySemaphore(m_device, m_cameraSemaphore, nullptr);
     m_cameraSemaphore = VK_NULL_HANDLE;
   }
   if (m_frameDoneSemaphore != VK_NULL_HANDLE) {
-    vkDestroySemaphore(m_ctx->m_device, m_frameDoneSemaphore, nullptr);
+    vkDestroySemaphore(m_device, m_frameDoneSemaphore, nullptr);
     m_frameDoneSemaphore = VK_NULL_HANDLE;
   }
 
-  m_ctx = nullptr;
+  m_device = VK_NULL_HANDLE;
+  m_physicalDevice = VK_NULL_HANDLE;
 }
 
 bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
@@ -154,15 +171,15 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
   bufferInfo.usage = usage;
   bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-  VkResult result = vkCreateBuffer(m_ctx->m_device, &bufferInfo, nullptr, buffer);
+  VkResult result = vkCreateBuffer(m_device, &bufferInfo, nullptr, buffer);
   if (result != VK_SUCCESS) {
-    LOGE("Failed to create exportable buffer: %s\n", nvvk::resultToString(result).c_str());
+    LOGE("Failed to create exportable buffer: %d\n", result);
     return false;
   }
 
   // Get memory requirements
   VkMemoryRequirements memReq;
-  vkGetBufferMemoryRequirements(m_ctx->m_device, *buffer, &memReq);
+  vkGetBufferMemoryRequirements(m_device, *buffer, &memReq);
 
   // Allocate device-local memory with export capability
   VkExportMemoryAllocateInfo exportAlloc{VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO};
@@ -173,19 +190,19 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
   allocInfo.allocationSize = memReq.size;
   allocInfo.memoryTypeIndex = findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-  result = vkAllocateMemory(m_ctx->m_device, &allocInfo, nullptr, memory);
+  result = vkAllocateMemory(m_device, &allocInfo, nullptr, memory);
   if (result != VK_SUCCESS) {
-    LOGE("Failed to allocate exportable memory: %s\n", nvvk::resultToString(result).c_str());
-    vkDestroyBuffer(m_ctx->m_device, *buffer, nullptr);
+    LOGE("Failed to allocate exportable memory: %d\n", result);
+    vkDestroyBuffer(m_device, *buffer, nullptr);
     return false;
   }
 
   // Bind buffer to memory
-  result = vkBindBufferMemory(m_ctx->m_device, *buffer, *memory, 0);
+  result = vkBindBufferMemory(m_device, *buffer, *memory, 0);
   if (result != VK_SUCCESS) {
-    LOGE("Failed to bind buffer memory: %s\n", nvvk::resultToString(result).c_str());
-    vkFreeMemory(m_ctx->m_device, *memory, nullptr);
-    vkDestroyBuffer(m_ctx->m_device, *buffer, nullptr);
+    LOGE("Failed to bind buffer memory: %d\n", result);
+    vkFreeMemory(m_device, *memory, nullptr);
+    vkDestroyBuffer(m_device, *buffer, nullptr);
     return false;
   }
 
@@ -193,8 +210,8 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
   *fd = exportMemoryFd(*memory);
   if (*fd < 0) {
     LOGE("Failed to export memory FD\n");
-    vkFreeMemory(m_ctx->m_device, *memory, nullptr);
-    vkDestroyBuffer(m_ctx->m_device, *buffer, nullptr);
+    vkFreeMemory(m_device, *memory, nullptr);
+    vkDestroyBuffer(m_device, *buffer, nullptr);
     return false;
   }
 
@@ -218,16 +235,16 @@ bool ExternalMemoryManager::createExportableTimelineSemaphore(VkSemaphore* semap
   VkSemaphoreCreateInfo semInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
   semInfo.pNext = &typeInfo;
 
-  VkResult result = vkCreateSemaphore(m_ctx->m_device, &semInfo, nullptr, semaphore);
+  VkResult result = vkCreateSemaphore(m_device, &semInfo, nullptr, semaphore);
   if (result != VK_SUCCESS) {
-    LOGE("Failed to create exportable timeline semaphore: %s\n", nvvk::resultToString(result).c_str());
+    LOGE("Failed to create exportable timeline semaphore: %d\n", result);
     return false;
   }
 
   *fd = exportSemaphoreFd(*semaphore);
   if (*fd < 0) {
     LOGE("Failed to export semaphore FD\n");
-    vkDestroySemaphore(m_ctx->m_device, *semaphore, nullptr);
+    vkDestroySemaphore(m_device, *semaphore, nullptr);
     return false;
   }
 
@@ -245,15 +262,15 @@ int ExternalMemoryManager::exportMemoryFd(VkDeviceMemory memory) {
   getFdInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
 
   PFN_vkGetMemoryFdKHR vkGetMemoryFdKHR = 
-    (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(m_ctx->m_device, "vkGetMemoryFdKHR");
+    (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(m_device, "vkGetMemoryFdKHR");
   if (!vkGetMemoryFdKHR) {
     LOGE("vkGetMemoryFdKHR not available\n");
     return -1;
   }
 
-  VkResult result = vkGetMemoryFdKHR(m_ctx->m_device, &getFdInfo, &fd);
+  VkResult result = vkGetMemoryFdKHR(m_device, &getFdInfo, &fd);
   if (result != VK_SUCCESS) {
-    LOGE("Failed to get memory FD: %s\n", nvvk::resultToString(result).c_str());
+    LOGE("Failed to get memory FD: %d\n", result);
     return -1;
   }
 
@@ -271,15 +288,15 @@ int ExternalMemoryManager::exportSemaphoreFd(VkSemaphore semaphore) {
   getFdInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
 
   PFN_vkGetSemaphoreFdKHR vkGetSemaphoreFdKHR = 
-    (PFN_vkGetSemaphoreFdKHR)vkGetDeviceProcAddr(m_ctx->m_device, "vkGetSemaphoreFdKHR");
+    (PFN_vkGetSemaphoreFdKHR)vkGetDeviceProcAddr(m_device, "vkGetSemaphoreFdKHR");
   if (!vkGetSemaphoreFdKHR) {
     LOGE("vkGetSemaphoreFdKHR not available\n");
     return -1;
   }
 
-  VkResult result = vkGetSemaphoreFdKHR(m_ctx->m_device, &getFdInfo, &fd);
+  VkResult result = vkGetSemaphoreFdKHR(m_device, &getFdInfo, &fd);
   if (result != VK_SUCCESS) {
-    LOGE("Failed to get semaphore FD: %s\n", nvvk::resultToString(result).c_str());
+    LOGE("Failed to get semaphore FD: %d\n", result);
     return -1;
   }
 
@@ -350,20 +367,19 @@ bool ExternalMemoryManager::sendHandshakeInfo() {
 #ifdef _WIN32
   return false;
 #else
-  using json = nlohmann::json;
+  // Create simple JSON manually
+  std::ostringstream json;
+  json << "{"
+       << "\"w\":" << m_config.width << ","
+       << "\"h\":" << m_config.height << ","
+       << "\"format\":\"R8G8B8A8_UNORM\","
+       << "\"color_readback_bytes\":" << (m_config.width * m_config.height * 4) << ","
+       << "\"row_pitch\":" << (m_config.width * 4) << ","
+       << "\"cam_bytes\":" << FRAME_CONSTANTS_SIZE << ","
+       << "\"sem_init\":{\"cam\":0,\"done\":0}"
+       << "}";
 
-  // Prepare handshake JSON
-  json handshake;
-  handshake["w"] = m_config.width;
-  handshake["h"] = m_config.height;
-  handshake["format"] = "R8G8B8A8_UNORM";
-  handshake["color_readback_bytes"] = m_config.width * m_config.height * 4;
-  handshake["row_pitch"] = m_config.width * 4;
-  handshake["cam_bytes"] = sizeof(shaderio::FrameConstants);
-  handshake["sem_init"]["cam"] = 0;
-  handshake["sem_init"]["done"] = 0;
-
-  std::string jsonStr = handshake.dump();
+  std::string jsonStr = json.str();
   
   // Send JSON header first
   uint32_t jsonSize = jsonStr.size();
@@ -388,6 +404,22 @@ bool ExternalMemoryManager::sendHandshakeInfo() {
     LOGE("Failed to export FDs for handshake\n");
     return false;
   }
+
+  // Log the FDs being sent from Vulkan side
+  fprintf(stdout, "=== VULKAN SIDE: Exporting FDs ===\n");
+  fprintf(stdout, "  Camera Memory FD:    %d\n", camFd);
+  fprintf(stdout, "  Color Memory FD:     %d\n", colorFd);
+  fprintf(stdout, "  Camera Semaphore FD: %d\n", camSemFd);
+  fprintf(stdout, "  Done Semaphore FD:   %d\n", doneSemFd);
+  fprintf(stdout, "===================================\n");
+  fflush(stdout);
+  
+  LOGI("=== VULKAN SIDE: Exporting FDs ===\n");
+  LOGI("  Camera Memory FD:    %d\n", camFd);
+  LOGI("  Color Memory FD:     %d\n", colorFd);
+  LOGI("  Camera Semaphore FD: %d\n", camSemFd);
+  LOGI("  Done Semaphore FD:   %d\n", doneSemFd);
+  LOGI("===================================\n");
 
   fds.push_back(camFd);
   fds.push_back(colorFd);
@@ -464,9 +496,9 @@ bool ExternalMemoryManager::waitForCameraReady(uint64_t frameNumber) {
   waitInfo.pSemaphores = &m_cameraSemaphore;
   waitInfo.pValues = &frameNumber;
 
-  VkResult result = vkWaitSemaphores(m_ctx->m_device, &waitInfo, UINT64_MAX);
+  VkResult result = vkWaitSemaphores(m_device, &waitInfo, UINT64_MAX);
   if (result != VK_SUCCESS) {
-    LOGE("Failed to wait for camera semaphore (frame %lu): %s\n", frameNumber, nvvk::resultToString(result).c_str());
+    LOGE("Failed to wait for camera semaphore (frame %lu): %d\n", frameNumber, result);
     return false;
   }
 
@@ -491,9 +523,12 @@ bool ExternalMemoryManager::signalFrameDone(uint64_t frameNumber) {
   submitInfo.signalSemaphoreCount = 1;
   submitInfo.pSignalSemaphores = &m_frameDoneSemaphore;
 
-  VkResult result = vkQueueSubmit(m_ctx->m_queueGCT, 1, &submitInfo, VK_NULL_HANDLE);
+  // Need to get queue from somewhere - for now use VK_NULL_HANDLE
+  // This needs to be passed in or stored
+  VkQueue queue = VK_NULL_HANDLE; // TODO: Get graphics queue
+  VkResult result = vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
   if (result != VK_SUCCESS) {
-    LOGE("Failed to signal frame done semaphore (frame %lu): %s\n", frameNumber, nvvk::resultToString(result).c_str());
+    LOGE("Failed to signal frame done semaphore (frame %lu): %d\n", frameNumber, result);
     return false;
   }
 
@@ -503,7 +538,7 @@ bool ExternalMemoryManager::signalFrameDone(uint64_t frameNumber) {
 
 uint32_t ExternalMemoryManager::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
   VkPhysicalDeviceMemoryProperties memProps;
-  vkGetPhysicalDeviceMemoryProperties(m_ctx->m_physicalDevice, &memProps);
+  vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProps);
 
   for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
     if ((typeFilter & (1 << i)) && (memProps.memoryTypes[i].propertyFlags & properties) == properties) {
@@ -517,10 +552,10 @@ uint32_t ExternalMemoryManager::findMemoryType(uint32_t typeFilter, VkMemoryProp
 
 bool ExternalMemoryManager::checkExtensionSupport(const char* extensionName) {
   uint32_t extensionCount;
-  vkEnumerateDeviceExtensionProperties(m_ctx->m_physicalDevice, nullptr, &extensionCount, nullptr);
+  vkEnumerateDeviceExtensionProperties(m_physicalDevice, nullptr, &extensionCount, nullptr);
   
   std::vector<VkExtensionProperties> availableExtensions(extensionCount);
-  vkEnumerateDeviceExtensionProperties(m_ctx->m_physicalDevice, nullptr, &extensionCount, availableExtensions.data());
+  vkEnumerateDeviceExtensionProperties(m_physicalDevice, nullptr, &extensionCount, availableExtensions.data());
 
   for (const auto& extension : availableExtensions) {
     if (strcmp(extension.extensionName, extensionName) == 0) {
@@ -528,6 +563,37 @@ bool ExternalMemoryManager::checkExtensionSupport(const char* extensionName) {
     }
   }
   return false;
+}
+
+bool ExternalMemoryManager::isConnected() const {
+#ifdef _WIN32
+  return false;
+#else
+  if (m_clientSocket < 0) {
+    return false;
+  }
+  
+  // Check if socket is still connected by attempting to peek at incoming data
+  char buffer;
+  int result = recv(m_clientSocket, &buffer, 1, MSG_PEEK | MSG_DONTWAIT);
+  
+  if (result == 0) {
+    // Connection closed by peer
+    return false;
+  } else if (result < 0) {
+    // Check for error
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      // No data available but connection is still alive
+      return true;
+    } else {
+      // Some other error, connection is likely dead
+      return false;
+    }
+  }
+  
+  // Data available, connection is alive
+  return true;
+#endif
 }
 
 } // namespace lodclusters

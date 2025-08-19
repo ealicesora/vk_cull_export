@@ -111,7 +111,7 @@ class CUDADriverAPI:
         self._load_cuda()
         
     def _load_cuda(self):
-        """Load CUDA driver library."""
+        """Load CUDA driver library and setup function pointers."""
         libcuda_name = ctypes.util.find_library('cuda')
         if not libcuda_name:
             # Try common paths
@@ -125,6 +125,26 @@ class CUDADriverAPI:
             
         self.cuda = ctypes.CDLL(libcuda_name)
         logger.info(f"Loaded CUDA driver: {libcuda_name}")
+        
+        # Define function prototypes for external memory functions
+        # These may not be available in older CUDA versions, so we check first
+        try:
+            self.cuda.cuImportExternalMemory.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+            self.cuda.cuImportExternalMemory.restype = ctypes.c_int
+            
+            self.cuda.cuExternalMemoryGetMappedBuffer.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_void_p]
+            self.cuda.cuExternalMemoryGetMappedBuffer.restype = ctypes.c_int
+            
+            self.cuda.cuImportExternalSemaphore.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+            self.cuda.cuImportExternalSemaphore.restype = ctypes.c_int
+            
+            self.cuda.cuSignalExternalSemaphoresAsync.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p]
+            self.cuda.cuSignalExternalSemaphoresAsync.restype = ctypes.c_int
+            
+            self.cuda.cuWaitExternalSemaphoresAsync.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p]
+            self.cuda.cuWaitExternalSemaphoresAsync.restype = ctypes.c_int
+        except AttributeError as e:
+            logger.warning(f"Some CUDA external memory functions not available: {e}")
         
         # Initialize CUDA
         result = self.cuda.cuInit(0)
@@ -154,24 +174,33 @@ class CUDADriverAPI:
         
     def import_external_memory(self, fd: int, size: int) -> ctypes.c_void_p:
         """Import external memory from file descriptor."""
-        # External memory descriptor
-        mem_desc = ctypes.c_void_p * 32  # Allocate enough space for the structure
-        desc = mem_desc()
+        # Define CUDA_EXTERNAL_MEMORY_HANDLE_DESC structure
+        class CUDA_EXTERNAL_MEMORY_HANDLE_DESC(ctypes.Structure):
+            class Handle(ctypes.Union):
+                _fields_ = [
+                    ("fd", ctypes.c_int),
+                    ("win32", ctypes.c_void_p),  # Not used on Linux
+                    ("nvSciBufObject", ctypes.c_void_p),  # Not used
+                ]
+            
+            _fields_ = [
+                ("type", ctypes.c_uint),
+                ("handle", Handle),
+                ("size", ctypes.c_ulonglong),
+                ("flags", ctypes.c_uint),
+                ("reserved", ctypes.c_uint * 16),
+            ]
         
-        # Set handle type and file descriptor
-        ctypes.memset(desc, 0, ctypes.sizeof(desc))
-        handle_type = ctypes.c_int(CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD)
-        fd_val = ctypes.c_int(fd)
-        size_val = ctypes.c_size_t(size)
+        # Create and populate descriptor
+        desc = CUDA_EXTERNAL_MEMORY_HANDLE_DESC()
+        desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD
+        desc.handle.fd = fd
+        desc.size = size
+        desc.flags = 0x01  # CUDA_EXTERNAL_MEMORY_DEDICATED
         
-        # This is a simplified approach - in practice you'd need to properly
-        # structure the CUDA_EXTERNAL_MEMORY_HANDLE_DESC
-        ctypes.memmove(desc, ctypes.byref(handle_type), ctypes.sizeof(ctypes.c_int))
-        ctypes.memmove(ctypes.byref(desc[1]), ctypes.byref(fd_val), ctypes.sizeof(ctypes.c_int))
-        ctypes.memmove(ctypes.byref(desc[2]), ctypes.byref(size_val), ctypes.sizeof(ctypes.c_size_t))
-        
+        # Import external memory
         ext_mem = ctypes.c_void_p()
-        result = self.cuda.cuImportExternalMemory(ctypes.byref(ext_mem), desc)
+        result = self.cuda.cuImportExternalMemory(ctypes.byref(ext_mem), ctypes.byref(desc))
         if result != CUDA_SUCCESS:
             raise RuntimeError(f"cuImportExternalMemory failed: {result}")
             
@@ -179,18 +208,24 @@ class CUDADriverAPI:
         
     def get_mapped_buffer(self, ext_mem: ctypes.c_void_p, size: int) -> ctypes.c_void_p:
         """Get device pointer from external memory."""
-        buffer_desc = ctypes.c_void_p * 8
-        desc = buffer_desc()
-        ctypes.memset(desc, 0, ctypes.sizeof(desc))
+        # Define CUDA_EXTERNAL_MEMORY_BUFFER_DESC structure
+        class CUDA_EXTERNAL_MEMORY_BUFFER_DESC(ctypes.Structure):
+            _fields_ = [
+                ("offset", ctypes.c_ulonglong),
+                ("size", ctypes.c_ulonglong),
+                ("flags", ctypes.c_uint),
+                ("reserved", ctypes.c_uint * 16),
+            ]
         
-        # Set offset and size
-        offset = ctypes.c_ulonglong(0)
-        size_val = ctypes.c_ulonglong(size)
-        ctypes.memmove(desc, ctypes.byref(offset), ctypes.sizeof(ctypes.c_ulonglong))
-        ctypes.memmove(ctypes.byref(desc[1]), ctypes.byref(size_val), ctypes.sizeof(ctypes.c_ulonglong))
+        # Create and populate descriptor
+        desc = CUDA_EXTERNAL_MEMORY_BUFFER_DESC()
+        desc.offset = 0
+        desc.size = size
+        desc.flags = 0
         
+        # Get mapped buffer
         dev_ptr = ctypes.c_void_p()
-        result = self.cuda.cuExternalMemoryGetMappedBuffer(ctypes.byref(dev_ptr), ext_mem, desc)
+        result = self.cuda.cuExternalMemoryGetMappedBuffer(ctypes.byref(dev_ptr), ext_mem, ctypes.byref(desc))
         if result != CUDA_SUCCESS:
             raise RuntimeError(f"cuExternalMemoryGetMappedBuffer failed: {result}")
             
@@ -198,18 +233,31 @@ class CUDADriverAPI:
         
     def import_external_semaphore(self, fd: int) -> ctypes.c_void_p:
         """Import external semaphore from file descriptor."""
-        sem_desc = ctypes.c_void_p * 16
-        desc = sem_desc()
-        ctypes.memset(desc, 0, ctypes.sizeof(desc))
+        # Define CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC structure
+        class CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC(ctypes.Structure):
+            class Handle(ctypes.Union):
+                _fields_ = [
+                    ("fd", ctypes.c_int),
+                    ("win32", ctypes.c_void_p),  # Not used on Linux
+                    ("nvSciSyncObj", ctypes.c_void_p),  # Not used
+                ]
+            
+            _fields_ = [
+                ("type", ctypes.c_uint),
+                ("handle", Handle),
+                ("flags", ctypes.c_uint),
+                ("reserved", ctypes.c_uint * 16),
+            ]
         
-        # Set handle type and file descriptor  
-        handle_type = ctypes.c_int(CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD)
-        fd_val = ctypes.c_int(fd)
-        ctypes.memmove(desc, ctypes.byref(handle_type), ctypes.sizeof(ctypes.c_int))
-        ctypes.memmove(ctypes.byref(desc[1]), ctypes.byref(fd_val), ctypes.sizeof(ctypes.c_int))
+        # Create and populate descriptor
+        desc = CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC()
+        desc.type = CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD
+        desc.handle.fd = fd
+        desc.flags = 0x01  # CUDA_EXTERNAL_SEMAPHORE_HANDLE_FLAG_TIMELINE_SEMAPHORE
         
+        # Import external semaphore
         ext_sem = ctypes.c_void_p()
-        result = self.cuda.cuImportExternalSemaphore(ctypes.byref(ext_sem), desc)
+        result = self.cuda.cuImportExternalSemaphore(ctypes.byref(ext_sem), ctypes.byref(desc))
         if result != CUDA_SUCCESS:
             raise RuntimeError(f"cuImportExternalSemaphore failed: {result}")
             
@@ -219,15 +267,28 @@ class CUDADriverAPI:
         """Signal external semaphore with timeline value."""
         if stream is None:
             stream = self.stream
+        
+        # Define CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS structure
+        class CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS(ctypes.Structure):
+            class Value(ctypes.Union):
+                _fields_ = [
+                    ("fence", ctypes.c_ulonglong),  # For timeline semaphores
+                    ("reserved", ctypes.c_uint),
+                ]
             
-        signal_params = ctypes.c_void_p * 8
-        params = signal_params()
-        ctypes.memset(params, 0, ctypes.sizeof(params))
+            _fields_ = [
+                ("params", Value),
+                ("flags", ctypes.c_uint),
+                ("reserved", ctypes.c_uint * 16),
+            ]
         
-        value_val = ctypes.c_ulonglong(value)
-        ctypes.memmove(params, ctypes.byref(value_val), ctypes.sizeof(ctypes.c_ulonglong))
+        # Create and populate parameters
+        params = CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS()
+        params.params.fence = value
+        params.flags = 0
         
-        result = self.cuda.cuSignalExternalSemaphoresAsync(ctypes.byref(semaphore), params, 1, stream)
+        # Signal semaphore
+        result = self.cuda.cuSignalExternalSemaphoresAsync(ctypes.byref(semaphore), ctypes.byref(params), 1, stream)
         if result != CUDA_SUCCESS:
             raise RuntimeError(f"cuSignalExternalSemaphoresAsync failed: {result}")
             
@@ -235,15 +296,28 @@ class CUDADriverAPI:
         """Wait for external semaphore timeline value."""
         if stream is None:
             stream = self.stream
+        
+        # Define CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS structure
+        class CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS(ctypes.Structure):
+            class Value(ctypes.Union):
+                _fields_ = [
+                    ("fence", ctypes.c_ulonglong),  # For timeline semaphores
+                    ("reserved", ctypes.c_uint),
+                ]
             
-        wait_params = ctypes.c_void_p * 8
-        params = wait_params()
-        ctypes.memset(params, 0, ctypes.sizeof(params))
+            _fields_ = [
+                ("params", Value),
+                ("flags", ctypes.c_uint),
+                ("reserved", ctypes.c_uint * 16),
+            ]
         
-        value_val = ctypes.c_ulonglong(value)
-        ctypes.memmove(params, ctypes.byref(value_val), ctypes.sizeof(ctypes.c_ulonglong))
+        # Create and populate parameters
+        params = CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS()
+        params.params.fence = value
+        params.flags = 0
         
-        result = self.cuda.cuWaitExternalSemaphoresAsync(ctypes.byref(semaphore), params, 1, stream)
+        # Wait on semaphore
+        result = self.cuda.cuWaitExternalSemaphoresAsync(ctypes.byref(semaphore), ctypes.byref(params), 1, stream)
         if result != CUDA_SUCCESS:
             raise RuntimeError(f"cuWaitExternalSemaphoresAsync failed: {result}")
             
@@ -377,7 +451,14 @@ class VK2TorchClient:
                 return False
                 
             cam_fd, color_fd, cam_sem_fd, done_sem_fd = fds
-            logger.info(f"Received FDs: cam={cam_fd}, color={color_fd}, cam_sem={cam_sem_fd}, done_sem={done_sem_fd}")
+            
+            # Log the FDs received on Python side
+            logger.info("=== PYTHON SIDE: Received FDs ===")
+            logger.info(f"  Camera Memory FD:    {cam_fd}")
+            logger.info(f"  Color Memory FD:     {color_fd}")
+            logger.info(f"  Camera Semaphore FD: {cam_sem_fd}")
+            logger.info(f"  Done Semaphore FD:   {done_sem_fd}")
+            logger.info("==================================")
             
             # Import external memory and semaphores via CUDA
             if self.cuda_api:

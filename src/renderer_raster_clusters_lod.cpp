@@ -21,6 +21,7 @@
 #include <fmt/format.h>
 
 #include "renderer.hpp"
+#include "external_memory.hpp"
 #include "../shaders/shaderio.h"
 
 namespace lodclusters {

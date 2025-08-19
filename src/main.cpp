@@ -46,6 +46,8 @@
 #include "scene.hpp"
 #include "external_memory.hpp"
 #include <filesystem>
+#include <thread>
+#include <chrono>
 
 using namespace lodclusters;
 
@@ -98,7 +100,7 @@ int main(int argc, char** argv)
   std::filesystem::path sceneFilePath;
   
   // External memory / Python integration parameters
-  std::string udsPath = "/tmp/vk2torch.sock";
+  std::string udsPath = "";  // Empty by default, set via command line to enable
   bool enableUDS = false;
   bool offscreen = false;
 
@@ -120,9 +122,13 @@ int main(int argc, char** argv)
   parameterParser.add(parameterRegistry);
   parameterParser.parse(argc, argv);
 
-  // Check if UDS integration is enabled (non-default path means enabled)
-  if (udsPath != "/tmp/vk2torch.sock") {
+  // Check if UDS integration is enabled (path specified or offscreen requested)
+  if (!udsPath.empty() || offscreen) {
     enableUDS = true;
+    // Set default path if not specified but offscreen is enabled
+    if (udsPath.empty()) {
+      udsPath = "/tmp/vk2torch.sock";
+    }
   }
 
   // Add external memory extensions if UDS is enabled
@@ -285,22 +291,59 @@ int main(int argc, char** argv)
     config.height = 1080; // TODO: make configurable
     config.format = VK_FORMAT_R8G8B8A8_UNORM;
     
-    if (!externalMemoryManager->init(vkContext, config)) {
+    if (!externalMemoryManager->init(vkContext.getDevice(), vkContext.getPhysicalDevice(), config)) {
       LOGE("Failed to initialize external memory manager\n");
       return -1;
     }
     
-    // Start listening for Python client connections (non-blocking)
-    if (!externalMemoryManager->acceptClient()) {
-      LOGI("No Python client connected, continuing without external memory integration\n");
-      externalMemoryManager.reset();
-      enableUDS = false;
+    // In offscreen mode, handle client connection differently
+    if (offscreen) {
+      LOGI("Running in offscreen mode - waiting for Python client...\n");
+      
+      // Block and wait for client connection
+      if (!externalMemoryManager->acceptClient()) {
+        LOGE("Failed to accept Python client in offscreen mode\n");
+        return -1;
+      }
+      
+      LOGI("Python client connected in offscreen mode\n");
+      
+      // Now wait for the client to disconnect
+      while (externalMemoryManager->isConnected()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+      
+      LOGI("Python client disconnected. Exiting offscreen mode.\n");
+      
+      // Clean up Vulkan context
+      vkContext.deinit();
+      return 0;
     } else {
-      // Pass the external memory manager to the sample element
-      sampleElement->setExternalMemoryManager(externalMemoryManager.get());
+      // GUI mode with UDS support
+      LOGI("GUI mode with UDS enabled - Python client can connect at any time\n");
+      
+      // Create a thread to handle Python client connection
+      std::thread clientThread([&externalMemoryManager, &sampleElement]() {
+        LOGI("Waiting for Python client connection in background...\n");
+        if (externalMemoryManager->acceptClient()) {
+          LOGI("Python client connected in GUI mode!\n");
+          // Pass the external memory manager to the sample element
+          sampleElement->setExternalMemoryManager(externalMemoryManager.get());
+          
+          // Monitor connection in background
+          while (externalMemoryManager->isConnected()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+          }
+          LOGI("Python client disconnected in GUI mode\n");
+        } else {
+          LOGI("Failed to accept Python client in GUI mode\n");
+        }
+      });
+      clientThread.detach(); // Let it run in background
     }
   }
 
+  // Normal GUI mode - set up application
   appInfo.instance       = vkContext.getInstance();
   appInfo.device         = vkContext.getDevice();
   appInfo.physicalDevice = vkContext.getPhysicalDevice();
@@ -349,6 +392,8 @@ int main(int argc, char** argv)
   app.addElement(sampleElement);
   app.addElement(std::make_shared<nvapp::ElementCamera>(cameraManipulator));
   app.addElement(std::make_shared<nvapp::ElementProfiler>(&profilerManager));
+  
+  // Run the GUI application
   app.run();
 
   nvutils::Logger::getInstance().setLogCallback(nullptr);
