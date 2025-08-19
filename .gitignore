@@ -17,12 +17,40 @@
 #specific to the project
 #############################
 
+# Build directories
 cmake_built
 cmake_build
-build
+build/
+build_*/
 _bin/
 _install/
 bin_x64
+
+# Downloaded resources and cache files
 downloaded_resources/
 _downloaded_resources/
+*.nvsngeo
+*.cache
+
+# Log files
+*.log
+output.log
+test_progress.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# IDE and system files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Generated files
 zbsgfxpack.lua
+
+# Scene files (optional - uncomment if you don't want to track them)
+# *.glb
+# *.gltf
