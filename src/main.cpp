@@ -44,6 +44,7 @@
 
 #include "lodclusters.hpp"
 #include "scene.hpp"
+#include "external_memory.hpp"
 #include <filesystem>
 
 using namespace lodclusters;
@@ -95,21 +96,42 @@ int main(int argc, char** argv)
   // Add local variables that we can access directly
   bool processingOnly = false;
   std::filesystem::path sceneFilePath;
+  
+  // External memory / Python integration parameters
+  std::string udsPath = "/tmp/vk2torch.sock";
+  bool enableUDS = false;
+  bool offscreen = false;
 
   parameterRegistry.add({"validation"}, &vkSetup.enableValidationLayers);
   parameterRegistry.add({"vsync"}, &appInfo.vSync);
   parameterRegistry.add({"device", "force a vulkan device via index into the device list"}, &vkSetup.forceGPU);
   parameterRegistry.add({"processingonly", "directly terminate app once cache file was saved. default false"}, &processingOnly);
   parameterRegistry.add({"scene"}, {".gltf", ".glb"}, &sceneFilePath);
+  parameterRegistry.add({"uds", "enable Python integration via Unix Domain Socket at specified path"}, &udsPath);
+  parameterRegistry.add({"offscreen", "enable offscreen rendering for Python integration"}, &offscreen);
 
   LodClusters::Info sampleInfo;
   sampleInfo.cameraManipulator               = cameraManipulator;
   sampleInfo.profilerManager                 = &profilerManager;
   sampleInfo.parameterRegistry               = &parameterRegistry;
+  sampleInfo.externalMemoryManager           = nullptr; // Will be set after initialization
   std::shared_ptr<LodClusters> sampleElement = std::make_shared<LodClusters>(sampleInfo);
 
   parameterParser.add(parameterRegistry);
   parameterParser.parse(argc, argv);
+
+  // Check if UDS integration is enabled (non-default path means enabled)
+  if (udsPath != "/tmp/vk2torch.sock") {
+    enableUDS = true;
+  }
+
+  // Add external memory extensions if UDS is enabled
+  if (enableUDS) {
+    LOGI("Enabling external memory extensions for Python integration\n");
+    for (const auto& ext : ExternalMemoryManager::getRequiredDeviceExtensions()) {
+      vkSetup.deviceExtensions.push_back({ext, nullptr, false});
+    }
+  }
 
   // Check if we're in processing-only mode to skip Vulkan initialization
   
@@ -248,6 +270,36 @@ int main(int argc, char** argv)
   }
 
   sampleElement->setSupportsClusters(vkContext.hasExtensionEnabled(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME));
+
+  // Initialize external memory manager if UDS is enabled
+  std::unique_ptr<ExternalMemoryManager> externalMemoryManager;
+  if (enableUDS) {
+    LOGI("Initializing external memory manager for Python integration\n");
+    externalMemoryManager = std::make_unique<ExternalMemoryManager>();
+    
+    ExternalMemoryConfig config;
+    config.enabled = true;
+    config.udsPath = udsPath;
+    config.offscreen = offscreen;
+    config.width = 1920;  // TODO: make configurable
+    config.height = 1080; // TODO: make configurable
+    config.format = VK_FORMAT_R8G8B8A8_UNORM;
+    
+    if (!externalMemoryManager->init(vkContext, config)) {
+      LOGE("Failed to initialize external memory manager\n");
+      return -1;
+    }
+    
+    // Start listening for Python client connections (non-blocking)
+    if (!externalMemoryManager->acceptClient()) {
+      LOGI("No Python client connected, continuing without external memory integration\n");
+      externalMemoryManager.reset();
+      enableUDS = false;
+    } else {
+      // Pass the external memory manager to the sample element
+      sampleElement->setExternalMemoryManager(externalMemoryManager.get());
+    }
+  }
 
   appInfo.instance       = vkContext.getInstance();
   appInfo.device         = vkContext.getDevice();

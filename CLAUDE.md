@@ -274,3 +274,39 @@ ldd _bin/Release/vk_lod_clusters
 - For large scenes, process once with `--processingonly 1`, then run normally
 - Adjust grid copies for memory constraints: `--gridcopies 1`
 - Use memory mapping for very large cached scenes: `--mappedcache 1`
+
+## Python Integration (VK2Torch)
+
+### Overview
+The codebase includes a Python integration system that enables zero-copy access to rendered frames from Python/PyTorch via Unix Domain Sockets and CUDA external memory. This allows real-time camera control and frame capture for AI/ML applications.
+
+### Architecture Components
+- **ExternalMemoryManager** (`src/external_memory.*`): Manages Vulkan external memory resources, timeline semaphores, and UDS communication
+- **Python Client** (`python/vk2torch_client.py`): CUDA-enabled client for zero-copy tensor access
+- **Integration Tests** (`python/test_integration.py`): Comprehensive test suite for the pipeline
+
+### Key Integration Points
+- **FrameConfig**: Extended with `externalMemoryManager` pointer to enable per-frame external memory operations
+- **Renderers**: Both raster and ray tracing renderers include image-to-buffer copy operations after rendering
+- **Main Application**: Extended with `--uds` and `--offscreen` CLI parameters for Python integration mode
+
+### Usage Commands
+```bash
+# Enable Python integration mode
+./_bin/Release/vk_lod_clusters --uds /tmp/vk2torch.sock --offscreen 1 --renderer 0 --validation 0
+
+# Run Python integration tests
+cd python && python test_integration.py
+
+# Python client example
+from vk2torch_client import VK2TorchClient
+with VK2TorchClient() as client:
+    client.connect()
+    tensor = client.get_frame()  # Zero-copy PyTorch tensor
+```
+
+### Technical Details
+- **Zero-Copy Pipeline**: Uses Vulkan external memory (`VK_KHR_external_memory_fd`) and timeline semaphores (`VK_KHR_timeline_semaphore`) for GPU-to-GPU data transfer
+- **Synchronization**: Timeline semaphores coordinate camera parameter updates and frame completion between Python and Vulkan
+- **Data Format**: R8G8B8A8_UNORM images with proper row pitch alignment for CUDA tensor mapping
+- **Memory Management**: Exportable device-local buffers for camera parameters and color readback

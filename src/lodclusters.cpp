@@ -89,6 +89,7 @@ LodClusters::LodClusters(const Info& info)
                                 &m_sceneConfig.processingThreadsPct);
 
   m_frameConfig.frameConstants                         = {};
+  m_frameConfig.externalMemoryManager                  = m_info.externalMemoryManager;
   m_frameConfig.frameConstants.wireThickness           = 2.f;
   m_frameConfig.frameConstants.wireSmoothing           = 1.f;
   m_frameConfig.frameConstants.wireColor               = {118.f / 255.f, 185.f / 255.f, 0.f};
@@ -874,4 +875,12 @@ bool LodClusters::isPickingValid(const shaderio::Readback& readback)
 {
   return readback._packedDepth0 != 0u;
 }
+
+void LodClusters::setExternalMemoryManager(ExternalMemoryManager* manager)
+{
+  m_externalMemoryManager = manager;
+  m_frameConfig.externalMemoryManager = manager;
+  LOGI("External memory manager set for Python integration\n");
+}
+
 }  // namespace lodclusters

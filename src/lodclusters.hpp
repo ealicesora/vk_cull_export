@@ -28,6 +28,7 @@
 #include <nvgui/enum_registry.hpp>
 
 #include "renderer.hpp"
+#include "external_memory.hpp"
 
 namespace lodclusters {
 
@@ -112,6 +113,7 @@ public:
     nvutils::ProfilerManager*                   profilerManager{};
     nvutils::ParameterRegistry*                 parameterRegistry{};
     std::shared_ptr<nvutils::CameraManipulator> cameraManipulator;
+    ExternalMemoryManager*                      externalMemoryManager{};
   };
 
   LodClusters(const Info& info);
@@ -128,6 +130,7 @@ public:
   void onFileDrop(const std::filesystem::path& filename) override;
 
   void setSupportsClusters(bool supported) { m_resources.m_supportsClusters = supported; }
+  void setExternalMemoryManager(ExternalMemoryManager* manager);
   bool getShowDebugUI() const { return m_showDebugUI; }
 
 private:
@@ -142,6 +145,7 @@ private:
   // key components
 
   Resources                 m_resources;
+  ExternalMemoryManager*    m_externalMemoryManager = nullptr;
   FrameConfig               m_frameConfig;
   double                    m_lastTime = 0;
   VkDescriptorSet           m_imguiTexture{};

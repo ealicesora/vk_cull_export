@@ -54,6 +54,8 @@
 
 namespace lodclusters {
 
+class ExternalMemoryManager;
+
 struct FrameConfig
 {
   VkExtent2D windowSize;
@@ -77,6 +79,9 @@ struct FrameConfig
   HbaoPass::Settings hbaoSettings;
 
   uint32_t visualize = VISUALIZE_LOD;
+
+  // External memory manager for Python integration
+  ExternalMemoryManager* externalMemoryManager = nullptr;
 
   // must be kept next to each other
   shaderio::FrameConstants frameConstants;
