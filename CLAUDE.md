@@ -6,27 +6,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Primary Build Commands
 
-#### Successful Build Process (Tested 2025-08-19)
+#### Successful Build Process (Tested 2025-08-20)
 ```bash
 # IMPORTANT: Deactivate conda environment if active to avoid GLIBC conflicts
 conda deactivate
 
-# Clean build directory if exists
-rm -rf build && mkdir build
+# Clean build directory if exists (optional for fresh build)
+rm -rf build
 
 # Configure build with GCC-10 and clean environment
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
 CC=gcc-10 CXX=g++-10 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DUSE_DLSS=OFF
 
-# Apply required patch to nvpro_core2 (this will be needed each build)
-# Add #include <unistd.h> after #include <signal.h> in:
-# build/_deps/nvpro_core2/nvutils/logger.cpp
+# Apply required patch to nvpro_core2 (only needed once after configure)
+# Edit: build/_deps/nvpro_core2/nvutils/logger.cpp
+# Around line 38-39, after #include <signal.h>, add:
+#   #include <unistd.h>
 
-# Build the project
+# Build the project (use -j4 for parallel compilation)
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-CC=gcc-10 CXX=g++-10 cmake --build build --config Release
+CC=gcc-10 CXX=g++-10 cmake --build build --config Release -j4
 
 # Executable will be created at: _bin/Release/vk_lod_clusters
+```
+
+#### Quick Rebuild (after initial setup)
+```bash
+# For subsequent builds after code changes
+conda deactivate  # If conda is active
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+CC=gcc-10 CXX=g++-10 cmake --build build --config Release -j4
 ```
 
 #### Alternative Build Commands (if above doesn't work)

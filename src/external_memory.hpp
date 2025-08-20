@@ -53,7 +53,7 @@ public:
 
   // Create exportable resources
   bool createExportableBuffer(VkDeviceSize size, VkBufferUsageFlags usage, 
-                              VkBuffer* buffer, VkDeviceMemory* memory, int* fd);
+                              VkBuffer* buffer, VkDeviceMemory* memory, int* fd, VkDeviceSize* actualSize = nullptr);
   bool createExportableTimelineSemaphore(VkSemaphore* semaphore, uint64_t initialValue, int* fd);
   
   // Export existing resources
@@ -110,6 +110,10 @@ private:
   // UDS socket
   int m_serverSocket = -1;
   int m_clientSocket = -1;
+
+  // Actual allocated sizes (may be larger than requested due to alignment)
+  VkDeviceSize m_cameraBufferSize = 0;
+  VkDeviceSize m_colorBufferSize = 0;
 
   // Helper functions
   uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);

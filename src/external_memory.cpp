@@ -76,19 +76,21 @@ bool ExternalMemoryManager::init(VkDevice device, VkPhysicalDevice physicalDevic
   int cameraFd = -1;
   if (!createExportableBuffer(cameraBufferSize, 
                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                              &m_cameraBuffer, &m_cameraMemory, &cameraFd)) {
+                              &m_cameraBuffer, &m_cameraMemory, &cameraFd, &m_cameraBufferSize)) {
     LOGE("Failed to create camera buffer\n");
     return false;
   }
+  LOGI("  Actual allocated size: %zu bytes\n", m_cameraBufferSize);
 
   LOGI("Creating color readback buffer (size: %zu bytes)\n", colorBufferSize);
   int colorFd = -1;
   if (!createExportableBuffer(colorBufferSize,
                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                              &m_colorReadbackBuffer, &m_colorReadbackMemory, &colorFd)) {
+                              &m_colorReadbackBuffer, &m_colorReadbackMemory, &colorFd, &m_colorBufferSize)) {
     LOGE("Failed to create color readback buffer\n");
     return false;
   }
+  LOGI("  Actual allocated size: %zu bytes\n", m_colorBufferSize);
 
   LOGI("Creating timeline semaphores\n");
   int camSemFd = -1, doneSemFd = -1;
@@ -156,7 +158,7 @@ void ExternalMemoryManager::deinit() {
 }
 
 bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
-                                                   VkBuffer* buffer, VkDeviceMemory* memory, int* fd) {
+                                                   VkBuffer* buffer, VkDeviceMemory* memory, int* fd, VkDeviceSize* actualSize) {
 #ifdef _WIN32
   LOGE("External memory not supported on Windows\n");
   return false;
@@ -180,6 +182,11 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
   // Get memory requirements
   VkMemoryRequirements memReq;
   vkGetBufferMemoryRequirements(m_device, *buffer, &memReq);
+
+  // Return actual allocated size if requested
+  if (actualSize) {
+    *actualSize = memReq.size;
+  }
 
   // Allocate device-local memory with export capability
   VkExportMemoryAllocateInfo exportAlloc{VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO};
@@ -373,9 +380,9 @@ bool ExternalMemoryManager::sendHandshakeInfo() {
        << "\"w\":" << m_config.width << ","
        << "\"h\":" << m_config.height << ","
        << "\"format\":\"R8G8B8A8_UNORM\","
-       << "\"color_readback_bytes\":" << (m_config.width * m_config.height * 4) << ","
+       << "\"color_readback_bytes\":" << m_colorBufferSize << ","
        << "\"row_pitch\":" << (m_config.width * 4) << ","
-       << "\"cam_bytes\":" << FRAME_CONSTANTS_SIZE << ","
+       << "\"cam_bytes\":" << m_cameraBufferSize << ","
        << "\"sem_init\":{\"cam\":0,\"done\":0}"
        << "}";
 

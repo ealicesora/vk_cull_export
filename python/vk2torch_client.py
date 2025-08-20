@@ -196,7 +196,7 @@ class CUDADriverAPI:
         desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD
         desc.handle.fd = fd
         desc.size = size
-        desc.flags = 0x01  # CUDA_EXTERNAL_MEMORY_DEDICATED
+        desc.flags = 0#0x01  # CUDA_EXTERNAL_MEMORY_DEDICATED
         
         # Import external memory
         ext_mem = ctypes.c_void_p()
@@ -365,9 +365,11 @@ class VK2TorchClient:
         
         # Initialize CUDA if available
         if HAS_CUPY and HAS_TORCH:
+            print('having both HAS_CUPY and HAS_TORCH')
             try:
                 self.cuda_api = CUDADriverAPI()
                 logger.info("CUDA Driver API initialized")
+                print(type(self.cuda_api))
             except Exception as e:
                 logger.error(f"Failed to initialize CUDA: {e}")
                 self.cuda_api = None
@@ -462,16 +464,33 @@ class VK2TorchClient:
             
             # Import external memory and semaphores via CUDA
             if self.cuda_api:
-                self.ext_mem_cam = self.cuda_api.import_external_memory(cam_fd, self.cam_bytes)
-                self.ext_mem_color = self.cuda_api.import_external_memory(color_fd, self.color_readback_bytes)
-                
-                self.dev_cam = self.cuda_api.get_mapped_buffer(self.ext_mem_cam, self.cam_bytes)
-                self.dev_color = self.cuda_api.get_mapped_buffer(self.ext_mem_color, self.color_readback_bytes)
-                
-                self.sem_cam = self.cuda_api.import_external_semaphore(cam_sem_fd)
-                self.sem_done = self.cuda_api.import_external_semaphore(done_sem_fd)
-                
-                logger.info("CUDA external resources imported successfully")
+                try:
+                    print("self.cam_bytes",self.cam_bytes)
+                    self.ext_mem_cam = self.cuda_api.import_external_memory(cam_fd, self.cam_bytes)
+                    print('hit')
+                    
+                    self.ext_mem_color = self.cuda_api.import_external_memory(color_fd, self.color_readback_bytes)
+                    print('hit')
+                    self.dev_cam = self.cuda_api.get_mapped_buffer(self.ext_mem_cam, self.cam_bytes)
+                    self.dev_color = self.cuda_api.get_mapped_buffer(self.ext_mem_color, self.color_readback_bytes)
+                    
+                    self.sem_cam = self.cuda_api.import_external_semaphore(cam_sem_fd)
+                    self.sem_done = self.cuda_api.import_external_semaphore(done_sem_fd)
+                    
+                    logger.info("CUDA external resources imported successfully")
+                except Exception as cuda_error:
+                    logger.warning(f"CUDA import failed: {cuda_error}")
+                    logger.warning("Connection will continue without CUDA functionality")
+                    logger.warning("You can still test connection but cannot get frame data")
+                    
+                    # Disable CUDA for this session
+                    self.cuda_api = None
+                    self.ext_mem_cam = None
+                    self.ext_mem_color = None
+                    self.dev_cam = None
+                    self.dev_color = None
+                    self.sem_cam = None
+                    self.sem_done = None
             
             # Close file descriptors (CUDA has taken ownership)
             for fd in fds:
@@ -526,7 +545,18 @@ class VK2TorchClient:
             
     def get_frame(self, timeout_ms: int = 5000) -> Optional['torch.Tensor']:
         """Get rendered frame as PyTorch tensor (zero-copy)."""
-        if not self.connected or not self.cuda_api or not HAS_CUPY or not HAS_TORCH:
+        if not self.connected:
+            logger.error("Not connected to Vulkan app")
+            return None
+        
+        if not self.cuda_api:
+            logger.warning("CUDA functionality not available - cannot get frame data")
+            logger.info("This could be due to CUDA import failure during connection")
+            logger.info("Connection is still active for testing purposes")
+            return None
+            
+        if not HAS_CUPY or not HAS_TORCH:
+            logger.error("CuPy or PyTorch not available")
             return None
             
         try:
@@ -621,6 +651,23 @@ class VK2TorchClient:
             self.socket = None
         self.connected = False
         logger.info("Disconnected from Vulkan app")
+    
+    @property
+    def has_cuda_support(self) -> bool:
+        """Check if CUDA functionality is available for this connection."""
+        print("self.cuda_api",self.cuda_api)
+        print("self.connected",self.connected)
+        return self.connected and self.cuda_api is not None
+    
+    @property
+    def connection_status(self) -> str:
+        """Get detailed connection status."""
+        if not self.connected:
+            return "Not connected"
+        elif not self.cuda_api:
+            return "Connected (CUDA unavailable - testing mode only)"
+        else:
+            return "Connected (Full functionality)"
         
     def __enter__(self):
         return self
