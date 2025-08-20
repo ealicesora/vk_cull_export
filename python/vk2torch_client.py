@@ -54,7 +54,18 @@ CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD = 1
 CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD = 1
 
 
+CUdeviceptr = ctypes.c_uint64  # 64-bit
 
+class CUDA_EXTERNAL_MEMORY_BUFFER_DESC(ctypes.Structure):
+    _fields_ = [
+        ("offset", ctypes.c_uint64),
+        ("size",   ctypes.c_uint64),
+        ("flags",  ctypes.c_uint),
+        ("reserved", ctypes.c_uint * 16),
+    ]
+
+
+CUdeviceptr = ctypes.c_uint64
 
 class CUDA_EXTERNAL_MEMORY_HANDLE_DESC(ctypes.Structure):
     class Handle(ctypes.Union):
@@ -153,9 +164,12 @@ class CUDADriverAPI:
             self.cuda.cuImportExternalMemory.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
             self.cuda.cuImportExternalMemory.restype = ctypes.c_int
             
-            self.cuda.cuExternalMemoryGetMappedBuffer.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_void_p]
-            self.cuda.cuExternalMemoryGetMappedBuffer.restype = ctypes.c_int
-            
+            self.cuda.cuExternalMemoryGetMappedBuffer.restype  = ctypes.c_int
+            self.cuda.cuExternalMemoryGetMappedBuffer.argtypes = [
+                ctypes.POINTER(CUdeviceptr),              # CUdeviceptr* pDevice
+                ctypes.c_void_p,                          # CUexternalMemory extMem
+                ctypes.POINTER(CUDA_EXTERNAL_MEMORY_BUFFER_DESC)  # const desc*
+            ]
             self.cuda.cuImportExternalSemaphore.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
             self.cuda.cuImportExternalSemaphore.restype = ctypes.c_int
             
@@ -249,22 +263,24 @@ class CUDADriverAPI:
     def get_mapped_buffer(self, ext_mem: ctypes.c_void_p, size: int) -> ctypes.c_void_p:
         """Get device pointer from external memory."""
         # Define CUDA_EXTERNAL_MEMORY_BUFFER_DESC structure
-        class CUDA_EXTERNAL_MEMORY_BUFFER_DESC(ctypes.Structure):
-            _fields_ = [
-                ("offset", ctypes.c_ulonglong),
-                ("size", ctypes.c_ulonglong),
-                ("flags", ctypes.c_uint),
-                ("reserved", ctypes.c_uint * 16),
-            ]
+        # class CUDA_EXTERNAL_MEMORY_BUFFER_DESC(ctypes.Structure):
+        #     _fields_ = [
+        #         ("offset", ctypes.c_ulonglong),
+        #         ("size", ctypes.c_ulonglong),
+        #         ("flags", ctypes.c_uint),
+        #         ("reserved", ctypes.c_uint * 16),
+        #     ]
         
         # Create and populate descriptor
         desc = CUDA_EXTERNAL_MEMORY_BUFFER_DESC()
+        ctypes.memset(ctypes.byref(desc), 0, ctypes.sizeof(desc))
         desc.offset = 0
         desc.size = size
         desc.flags = 0
         
         # Get mapped buffer
-        dev_ptr = ctypes.c_void_p()
+        # dev_ptr = ctypes.c_void_p()
+        dev_ptr = CUdeviceptr(0)
         result = self.cuda.cuExternalMemoryGetMappedBuffer(ctypes.byref(dev_ptr), ext_mem, ctypes.byref(desc))
         if result != CUDA_SUCCESS:
             raise RuntimeError(f"cuExternalMemoryGetMappedBuffer failed: {result}")
@@ -291,6 +307,7 @@ class CUDADriverAPI:
         
         # Create and populate descriptor
         desc = CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC()
+        ctypes.memset(ctypes.byref(desc), 0, ctypes.sizeof(desc))
         desc.type = 9
         desc.handle.fd = fd
         desc.flags = 0x00 #0x01  # CUDA_EXTERNAL_SEMAPHORE_HANDLE_FLAG_TIMELINE_SEMAPHORE
