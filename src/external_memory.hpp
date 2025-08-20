@@ -71,7 +71,20 @@ public:
 
   // Frame synchronization
   bool waitForCameraReady(uint64_t frameNumber);
-  bool signalFrameDone(uint64_t frameNumber);
+  bool signalFrameDone(uint64_t frameNumber, VkQueue queue);
+  
+  // Camera data reading
+  bool readCameraData(void* destination, size_t size);
+  
+  // Window mode frame protocol integration
+  void addCameraWaitToSubmit(VkSubmitInfo& submitInfo, uint64_t frameNumber, VkTimelineSemaphoreSubmitInfo& timelineInfo, 
+                             VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+  void addFrameDoneSignalToSubmit(VkSubmitInfo& submitInfo, uint64_t frameNumber, VkTimelineSemaphoreSubmitInfo& timelineInfo);
+  void cmdCopyImageToColorBuffer(VkCommandBuffer cmd, VkImage srcImage, VkImageLayout srcLayout, uint32_t width, uint32_t height);
+  
+  // Frame counter management
+  uint64_t getNextFrameNumber() { return m_currentFrameNumber++; }
+  uint64_t getCurrentFrameNumber() const { return m_currentFrameNumber; }
 
   // Getters
   VkBuffer getCameraBuffer() const { return m_cameraBuffer; }
@@ -126,9 +139,16 @@ private:
   bool m_cameraBufferDedicated = false;
   bool m_colorBufferDedicated = false;
   
+  // Memory mapped pointers for direct access
+  void* m_cameraBufferMapped = nullptr;
+  void* m_colorBufferMapped = nullptr;
+  
   // Semaphore echo thread
   std::thread* m_echoThread = nullptr;
   std::atomic<bool> m_echoThreadRunning{false};
+  
+  // Frame counter for window mode protocol
+  uint64_t m_currentFrameNumber = 1;
 
   // Helper functions
   uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);

@@ -91,6 +91,14 @@ bool ExternalMemoryManager::init(VkDevice device, VkPhysicalDevice physicalDevic
   }
   LOGI("  Actual allocated size: %zu bytes (dedicated: %s)\n", 
        m_cameraBufferSize, m_cameraBufferDedicated ? "yes" : "no");
+       
+  // Map camera buffer for CPU access
+  VkResult result = vkMapMemory(m_device, m_cameraMemory, 0, VK_WHOLE_SIZE, 0, &m_cameraBufferMapped);
+  if (result != VK_SUCCESS) {
+    LOGE("Failed to map camera buffer memory: %d\n", result);
+    return false;
+  }
+  LOGI("Camera buffer mapped at %p\n", m_cameraBufferMapped);
 
   LOGI("Creating color readback buffer (size: %zu bytes)\n", colorBufferSize);
   int colorFd = -1;
@@ -103,6 +111,14 @@ bool ExternalMemoryManager::init(VkDevice device, VkPhysicalDevice physicalDevic
   }
   LOGI("  Actual allocated size: %zu bytes (dedicated: %s)\n", 
        m_colorBufferSize, m_colorBufferDedicated ? "yes" : "no");
+       
+  // Map color buffer for CPU access (optional - could be unmapped for performance)
+  result = vkMapMemory(m_device, m_colorReadbackMemory, 0, VK_WHOLE_SIZE, 0, &m_colorBufferMapped);
+  if (result != VK_SUCCESS) {
+    LOGE("Failed to map color buffer memory: %d\n", result);
+    return false;
+  }
+  LOGI("Color buffer mapped at %p\n", m_colorBufferMapped);
 
   LOGI("Creating timeline semaphores\n");
   int camSemFd = -1, doneSemFd = -1;
@@ -140,6 +156,16 @@ void ExternalMemoryManager::deinit() {
     m_serverSocket = -1;
     // Remove socket file
     unlink(m_config.udsPath.c_str());
+  }
+
+  // Unmap memory before destroying resources
+  if (m_cameraBufferMapped) {
+    vkUnmapMemory(m_device, m_cameraMemory);
+    m_cameraBufferMapped = nullptr;
+  }
+  if (m_colorBufferMapped) {
+    vkUnmapMemory(m_device, m_colorReadbackMemory);
+    m_colorBufferMapped = nullptr;
   }
 
   // Destroy Vulkan resources
@@ -626,11 +652,16 @@ bool ExternalMemoryManager::waitForCameraReady(uint64_t frameNumber) {
 #endif
 }
 
-bool ExternalMemoryManager::signalFrameDone(uint64_t frameNumber) {
+bool ExternalMemoryManager::signalFrameDone(uint64_t frameNumber, VkQueue queue) {
 #ifdef _WIN32
   return false;
 #else
   if (!isConnected()) {
+    return false;
+  }
+  
+  if (queue == VK_NULL_HANDLE) {
+    LOGE("Invalid queue handle for signaling frame done semaphore\n");
     return false;
   }
 
@@ -643,9 +674,6 @@ bool ExternalMemoryManager::signalFrameDone(uint64_t frameNumber) {
   submitInfo.signalSemaphoreCount = 1;
   submitInfo.pSignalSemaphores = &m_frameDoneSemaphore;
 
-  // Need to get queue from somewhere - for now use VK_NULL_HANDLE
-  // This needs to be passed in or stored
-  VkQueue queue = VK_NULL_HANDLE; // TODO: Get graphics queue
   VkResult result = vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
   if (result != VK_SUCCESS) {
     LOGE("Failed to signal frame done semaphore (frame %lu): %d\n", frameNumber, result);
@@ -833,6 +861,123 @@ void ExternalMemoryManager::semaphoreEchoWorker() {
   }
   
   LOGI("Semaphore echo worker stopped\n");
+#endif
+}
+
+void ExternalMemoryManager::addCameraWaitToSubmit(VkSubmitInfo& submitInfo, uint64_t frameNumber, 
+                                                   VkTimelineSemaphoreSubmitInfo& timelineInfo,
+                                                   VkPipelineStageFlags waitStage) {
+#ifndef _WIN32
+  if (!isConnected()) {
+    return;
+  }
+
+  // Setup timeline semaphore wait info
+  timelineInfo.waitSemaphoreValueCount = 1;
+  timelineInfo.pWaitSemaphoreValues = &frameNumber;
+  
+  // Add to submit info
+  submitInfo.waitSemaphoreCount = 1;
+  submitInfo.pWaitSemaphores = &m_cameraSemaphore;
+  submitInfo.pWaitDstStageMask = &waitStage;
+  
+  // Chain timeline info if not already chained
+  if (submitInfo.pNext == nullptr) {
+    submitInfo.pNext = &timelineInfo;
+  }
+  
+  LOGI("Added camera wait for frame %lu to submit\n", frameNumber);
+#endif
+}
+
+void ExternalMemoryManager::addFrameDoneSignalToSubmit(VkSubmitInfo& submitInfo, uint64_t frameNumber, 
+                                                        VkTimelineSemaphoreSubmitInfo& timelineInfo) {
+#ifndef _WIN32  
+  if (!isConnected()) {
+    return;
+  }
+
+  // Setup timeline semaphore signal info
+  timelineInfo.signalSemaphoreValueCount = 1;
+  timelineInfo.pSignalSemaphoreValues = &frameNumber;
+  
+  // Add to submit info
+  submitInfo.signalSemaphoreCount = 1;
+  submitInfo.pSignalSemaphores = &m_frameDoneSemaphore;
+  
+  // Chain timeline info if not already chained
+  if (submitInfo.pNext == nullptr) {
+    submitInfo.pNext = &timelineInfo;
+  }
+  
+  LOGI("Added frame done signal for frame %lu to submit\n", frameNumber);
+#endif
+}
+
+void ExternalMemoryManager::cmdCopyImageToColorBuffer(VkCommandBuffer cmd, VkImage srcImage, VkImageLayout srcLayout, 
+                                                       uint32_t width, uint32_t height) {
+#ifndef _WIN32
+  if (!isConnected()) {
+    return;
+  }
+  
+  // Transition source image to transfer source optimal if needed
+  if (srcLayout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.oldLayout = srcLayout;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = srcImage;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+  }
+  
+  // Copy image to buffer with tight row packing
+  VkBufferImageCopy region{};
+  region.bufferOffset = 0;
+  region.bufferRowLength = 0;  // Tight packing - no padding between rows  
+  region.bufferImageHeight = 0; // Tight packing - no padding between image planes
+  region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  region.imageSubresource.mipLevel = 0;
+  region.imageSubresource.baseArrayLayer = 0;
+  region.imageSubresource.layerCount = 1;
+  region.imageOffset = {0, 0, 0};
+  region.imageExtent = {width, height, 1};
+  
+  vkCmdCopyImageToBuffer(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_colorReadbackBuffer, 1, &region);
+  
+  LOGI("Added image to buffer copy command: %ux%u -> %zu bytes\n", width, height, m_colorBufferSize);
+#endif
+}
+
+bool ExternalMemoryManager::readCameraData(void* destination, size_t size) {
+#ifdef _WIN32
+  return false;
+#else
+  if (!isConnected() || !m_cameraBufferMapped) {
+    LOGE("Cannot read camera data: not connected or buffer not mapped\n");
+    return false;
+  }
+  
+  if (size > m_cameraBufferSize) {
+    LOGE("Requested camera data size %zu exceeds buffer size %zu\n", size, m_cameraBufferSize);
+    return false;
+  }
+  
+  // Copy data from mapped memory
+  memcpy(destination, m_cameraBufferMapped, size);
+  
+  LOGI("Read %zu bytes of camera data from mapped buffer\n", size);
+  return true;
 #endif
 }
 

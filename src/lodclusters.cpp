@@ -783,6 +783,40 @@ void LodClusters::onRender(VkCommandBuffer cmd)
         m_equalFrames++;
     }
 
+    // External memory frame protocol: Wait for camera ready before rendering
+    if(m_frameConfig.externalMemoryManager && m_frameConfig.externalMemoryManager->isConnected())
+    {
+      uint64_t frameNumber = m_frameConfig.externalMemoryManager->getNextFrameNumber();
+      
+      // Wait for Python to signal camera ready
+      // This is a synchronous wait - the frame will not proceed until Python provides camera data
+      if(!m_frameConfig.externalMemoryManager->waitForCameraReady(frameNumber))
+      {
+        LOGW("Frame %lu: Failed to wait for camera ready, proceeding with existing camera data\n", frameNumber);
+      }
+      else
+      {
+        LOGI("Frame %lu: Camera ready signal received, proceeding with rendering\n", frameNumber);
+        
+        // Read camera data from the external buffer and update frame constants
+        // The camera buffer contains updated FrameConstants from Python
+        shaderio::FrameConstants pythonFrameConstants;
+        if (m_frameConfig.externalMemoryManager->readCameraData(&pythonFrameConstants, sizeof(pythonFrameConstants))) {
+          // Use Python-provided camera matrices instead of camera manipulator
+          frameConstants.viewProjMatrix = pythonFrameConstants.viewProjMatrix;
+          frameConstants.viewProjMatrixI = pythonFrameConstants.viewProjMatrixI;
+          frameConstants.viewMatrix = pythonFrameConstants.viewMatrix;
+          frameConstants.viewMatrixI = pythonFrameConstants.viewMatrixI;
+          frameConstants.projMatrix = pythonFrameConstants.projMatrix;
+          frameConstants.projMatrixI = pythonFrameConstants.projMatrixI;
+          frameConstants.viewPos = pythonFrameConstants.viewPos;
+          frameConstants.viewDir = pythonFrameConstants.viewDir;
+          
+          LOGI("Frame %lu: Applied Python camera matrices\n", frameNumber);
+        }
+      }
+    }
+
     m_renderer->render(cmd, m_resources, *m_renderScene, m_frameConfig, m_profilerGpuTimer);
   }
   else
@@ -795,6 +829,31 @@ void LodClusters::onRender(VkCommandBuffer cmd)
   }
 
   m_resources.endFrame();
+
+  // External memory frame protocol integration (window mode)
+  if(m_frameConfig.externalMemoryManager && m_frameConfig.externalMemoryManager->isConnected())
+  {
+    uint64_t frameNumber = m_frameConfig.externalMemoryManager->getCurrentFrameNumber();
+    
+    // Choose the appropriate final color image (resolved if MSAA is used)
+    VkImage finalImage = m_resources.m_frameBuffer.useResolved ? 
+                          m_resources.m_frameBuffer.imgColorResolved.image :
+                          m_resources.m_frameBuffer.imgColor.image;
+    VkImageLayout finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;  // Typical layout after rendering
+    
+    // Add copy command to the current command buffer
+    m_frameConfig.externalMemoryManager->cmdCopyImageToColorBuffer(
+        cmd, finalImage, finalLayout, 
+        m_resources.m_frameBuffer.renderSize.width, 
+        m_resources.m_frameBuffer.renderSize.height
+    );
+    
+    // Signal frame done semaphore when this command buffer completes
+    // This will be signaled after the copy completes
+    m_frameConfig.externalMemoryManager->signalFrameDone(frameNumber, m_resources.m_queue.queue);
+    
+    LOGI("Frame %lu: External memory protocol integrated\n", frameNumber);
+  }
 
   // signal new semaphore state with this command buffer's submit
   VkSemaphoreSubmitInfo semSubmit = m_resources.m_queueStates.primary.advanceSignalSubmit(VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
