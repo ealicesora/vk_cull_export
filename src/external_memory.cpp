@@ -222,13 +222,18 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
   const auto feats = ebp.externalMemoryProperties.externalMemoryFeatures;
   const bool needsDedicated = (feats & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT) != 0;
   
-  if (needsDedicated) {
-    LOGI("Dedicated allocation required for this buffer\n");
+  // FORCE DEDICATED ALLOCATION FOR TESTING
+  const bool forceDedicated = true;  // Always use dedicated for testing
+  const bool useDedicated = needsDedicated || forceDedicated;
+  
+  if (useDedicated) {
+    LOGI("Using dedicated allocation (required=%s, forced=%s)\n", 
+         needsDedicated ? "yes" : "no", forceDedicated ? "yes" : "no");
   }
   
   // Return dedicated flag if requested
   if (isDedicated) {
-    *isDedicated = needsDedicated;
+    *isDedicated = useDedicated;  // Use the combined flag (forced or required)
   }
 
   // Return actual allocated size if requested
@@ -246,7 +251,7 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
   
   // Setup dedicated allocation if needed
   VkMemoryDedicatedAllocateInfo dedicated{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
-  if (needsDedicated) {
+  if (useDedicated) {  // Use the combined flag instead of needsDedicated
     dedicated.buffer = *buffer;
     dedicated.image = VK_NULL_HANDLE;
     dedicated.pNext = nullptr;
@@ -254,6 +259,8 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
     // Chain: allocInfo -> exportAlloc -> dedicated
     exportAlloc.pNext = &dedicated;
     allocInfo.pNext = &exportAlloc;
+    
+    LOGI("Applying VkMemoryDedicatedAllocateInfo to allocation\n");
   } else {
     allocInfo.pNext = &exportAlloc;
   }
