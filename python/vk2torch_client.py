@@ -407,8 +407,8 @@ class CUDADriverAPI:
         #     ctypes.POINTER(CUDA_EXTERNAL_MEMORY_HANDLE_DESC)
         # ]
 
-        print(ctypes.sizeof(CUDA_EXTERNAL_MEMORY_HANDLE_DESC))
-        print(ctypes.sizeof(CUDA_EXTERNAL_MEMORY_BUFFER_DESC))
+        # print(ctypes.sizeof(CUDA_EXTERNAL_MEMORY_HANDLE_DESC))
+        # print(ctypes.sizeof(CUDA_EXTERNAL_MEMORY_BUFFER_DESC))
 
         desc = CUDA_EXTERNAL_MEMORY_HANDLE_DESC()
         ctypes.memset(ctypes.byref(desc), 0, ctypes.sizeof(desc))
