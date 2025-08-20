@@ -245,40 +245,6 @@ class CUDADriverAPI:
         self.stream = stream
         logger.info("CUDA stream created")
         
-    def import_external_memory(self, fd: int, size: int, is_dedicated: bool = False) -> ctypes.c_void_p:
-        """Import external memory from file descriptor."""
-        # Define CUDA_EXTERNAL_MEMORY_HANDLE_DESC structure
-        class CUDA_EXTERNAL_MEMORY_HANDLE_DESC(ctypes.Structure):
-            class Handle(ctypes.Union):
-                _fields_ = [
-                    ("fd", ctypes.c_int),
-                    ("win32", ctypes.c_void_p),  # Not used on Linux
-                    ("nvSciBufObject", ctypes.c_void_p),  # Not used
-                ]
-            
-            _fields_ = [
-                ("type", ctypes.c_uint),
-                ("handle", Handle),
-                ("size", ctypes.c_ulonglong),
-                ("flags", ctypes.c_uint),
-                ("reserved", ctypes.c_uint * 16),
-            ]
-        
-        # Create and populate descriptor
-        desc = CUDA_EXTERNAL_MEMORY_HANDLE_DESC()
-        desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD
-        desc.handle.fd = fd
-        desc.size = size
-        # Use dedicated flag if specified
-        desc.flags = 0x01 if is_dedicated else 0x00  # CUDA_EXTERNAL_MEMORY_DEDICATED or not
-        
-        # Import external memory
-        ext_mem = ctypes.c_void_p()
-        result = self.cuda.cuImportExternalMemory(ctypes.byref(ext_mem), ctypes.byref(desc))
-        if result != CUDA_SUCCESS:
-            raise RuntimeError(f"cuImportExternalMemory failed: {result}")
-            
-        return ext_mem
         
     def get_mapped_buffer(self, ext_mem: ctypes.c_void_p, size: int) -> ctypes.c_void_p:
         """Get device pointer from external memory."""
@@ -327,18 +293,18 @@ class CUDADriverAPI:
         desc = CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC()
         desc.type = CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD
         desc.handle.fd = fd
-        desc.flags = 0 #0x01  # CUDA_EXTERNAL_SEMAPHORE_HANDLE_FLAG_TIMELINE_SEMAPHORE
+        desc.flags = 0x00 #0x01  # CUDA_EXTERNAL_SEMAPHORE_HANDLE_FLAG_TIMELINE_SEMAPHORE
         
         # Import external semaphore
         ext_sem = ctypes.c_void_p()
         result = self.cuda.cuImportExternalSemaphore(ctypes.byref(ext_sem), ctypes.byref(desc))
         if result != CUDA_SUCCESS:
             raise RuntimeError(f"cuImportExternalSemaphore failed: {result}")
-            
+        print('succeed')
         return ext_sem
         
 
-    def import_external_memory_f(self, fd: int, size: int, *, dedicated: bool=False) -> ctypes.c_void_p:
+    def import_external_memory(self, fd: int, size: int, *, dedicated: bool=True) -> ctypes.c_void_p:
         # 设原型（只设一次；可移到 __init__）
         self.cuda.cuImportExternalMemory.restype  = ctypes.c_int
         self.cuda.cuImportExternalMemory.argtypes = [
@@ -584,15 +550,20 @@ class VK2TorchClient:
                         logger.warning("No UUID from Vulkan, using default device 0")
                         self.cuda_api.create_context_on_device(0)
 
-                    # Now import external memory with dedicated flags
-                    self.ext_mem_cam = self.cuda_api.import_external_memory(cam_fd, self.cam_bytes, self.cam_dedicated)
-                    self.ext_mem_color = self.cuda_api.import_external_memory(color_fd, self.color_readback_bytes, self.color_dedicated)
-                    
-                    self.dev_cam = self.cuda_api.get_mapped_buffer(self.ext_mem_cam, self.cam_bytes)
-                    self.dev_color = self.cuda_api.get_mapped_buffer(self.ext_mem_color, self.color_readback_bytes)
-                    
                     self.sem_cam = self.cuda_api.import_external_semaphore(cam_sem_fd)
                     self.sem_done = self.cuda_api.import_external_semaphore(done_sem_fd)
+                    print('sem_import ok')
+                    self.ext_mem_cam = self.cuda_api.import_external_memory(cam_fd, self.cam_bytes)
+                    self.ext_mem_color = self.cuda_api.import_external_memory(color_fd, self.color_readback_bytes)
+                    
+                    
+                    
+
+                    # Now import external memory
+
+
+                    self.dev_cam = self.cuda_api.get_mapped_buffer(self.ext_mem_cam, self.cam_bytes)
+                    self.dev_color = self.cuda_api.get_mapped_buffer(self.ext_mem_color, self.color_readback_bytes)
                     
 
                     logger.info("CUDA external resources imported successfully")
@@ -617,7 +588,7 @@ class VK2TorchClient:
             return True
             
         except Exception as e:
-            logger.error(f"Failed to receive FDs: {e}")
+            logger.error(f"Failed to receive FDs: {e}" + str(type(e)))
             return False
             
     def update_camera(self, view_matrix: np.ndarray, proj_matrix: np.ndarray) -> bool:
