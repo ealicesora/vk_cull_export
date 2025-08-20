@@ -260,7 +260,7 @@ class CUDADriverAPI:
         logger.info("CUDA stream created")
         
         
-    def get_mapped_buffer(self, ext_mem: ctypes.c_void_p, size: int) -> ctypes.c_void_p:
+    def get_mapped_buffer(self, ext_mem: ctypes.c_void_p, size: int, name: str) -> ctypes.c_void_p:
         """Get device pointer from external memory."""
         # Define CUDA_EXTERNAL_MEMORY_BUFFER_DESC structure
         # class CUDA_EXTERNAL_MEMORY_BUFFER_DESC(ctypes.Structure):
@@ -283,6 +283,7 @@ class CUDADriverAPI:
         dev_ptr = CUdeviceptr(0)
         result = self.cuda.cuExternalMemoryGetMappedBuffer(ctypes.byref(dev_ptr), ext_mem, ctypes.byref(desc))
         if result != CUDA_SUCCESS:
+            print('error in'+name)
             raise RuntimeError(f"cuExternalMemoryGetMappedBuffer failed: {result}")
             
         return dev_ptr
@@ -577,10 +578,10 @@ class VK2TorchClient:
                     
 
                     # Now import external memory
+                    self.dev_color = self.cuda_api.get_mapped_buffer(self.ext_mem_color, self.color_readback_bytes,"color")
 
-
-                    self.dev_cam = self.cuda_api.get_mapped_buffer(self.ext_mem_cam, self.cam_bytes)
-                    self.dev_color = self.cuda_api.get_mapped_buffer(self.ext_mem_color, self.color_readback_bytes)
+                    self.dev_cam = self.cuda_api.get_mapped_buffer(self.ext_mem_cam, self.cam_bytes,"cam")
+                    
                     
 
                     logger.info("CUDA external resources imported successfully")
