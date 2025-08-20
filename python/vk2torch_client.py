@@ -63,7 +63,7 @@ class CUDA_EXTERNAL_MEMORY_BUFFER_DESC(ctypes.Structure):
         ("offset", ctypes.c_uint64),
         ("size",   ctypes.c_uint64),
         ("flags",  ctypes.c_uint),
-        # ("reserved", ctypes.c_uint * 16) ,
+         ("reserved", ctypes.c_uint * 16) ,
     ]
 
 class CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC(ctypes.Structure):
@@ -135,19 +135,26 @@ class CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS(ctypes.Structure):
 
 CUdeviceptr = ctypes.c_uint64
 
-class CUDA_EXTERNAL_MEMORY_HANDLE_DESC(ctypes.Structure):
-    class Handle(ctypes.Union):
-        _fields_ = [
-            ("fd", ctypes.c_int),
-            ("win32", ctypes.c_void_p),
-            ("nvSciBufObject", ctypes.c_void_p),
-        ]
+class _Win32Pair(ctypes.Structure):
     _fields_ = [
-        ("type", ctypes.c_uint),
-        ("handle", Handle),
-        ("size", ctypes.c_ulonglong),
-        ("flags", ctypes.c_uint),
-         ("reserved", ctypes.c_uint * 16),   # ★ 单个 uint
+        ("handle", ctypes.c_void_p),
+        ("name",   ctypes.c_void_p),
+    ]
+
+class _HandleUnion(ctypes.Union):
+    _fields_ = [
+        ("fd", ctypes.c_int),
+        ("win32", _Win32Pair),
+        ("nvSciBufObject", ctypes.c_void_p),
+    ]
+
+class CUDA_EXTERNAL_MEMORY_HANDLE_DESC(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_uint),                 # CUexternalMemoryHandleType
+        ("handle", _HandleUnion),
+        ("size", ctypes.c_uint64),               # allocation size (NOT buffer size)
+        ("flags", ctypes.c_uint),                # 0 or CUDA_EXTERNAL_MEMORY_DEDICATED
+        ("reserved", ctypes.c_uint * 16) ,
     ]
 
 
@@ -392,36 +399,13 @@ class CUDADriverAPI:
         return ext_sem
         
 
-    # def import_external_memory(self, fd: int, size: int, *, dedicated: bool=True) -> ctypes.c_void_p:
-    #     # 设原型（只设一次；可移到 __init__）
-    #     self.cuda.cuImportExternalMemory.restype  = ctypes.c_int
-    #     self.cuda.cuImportExternalMemory.argtypes = [
-    #         ctypes.POINTER(ctypes.c_void_p),
-    #         ctypes.POINTER(CUDA_EXTERNAL_MEMORY_HANDLE_DESC)
-    #     ]
-
-    #     desc = CUDA_EXTERNAL_MEMORY_HANDLE_DESC()
-    #     # 清零（ctypes 默认已零，但手动更放心）
-    #     ctypes.memset(ctypes.byref(desc), 0, ctypes.sizeof(desc))
-
-    #     desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD
-    #     desc.fd   = fd
-    #     desc.size = ctypes.c_ulonglong(size)
-    #     desc.flags = CUDA_EXTERNAL_MEMORY_DEDICATED if dedicated else 0
-
-    #     ext_mem = ctypes.c_void_p()
-    #     result = self.cuda.cuImportExternalMemory(ctypes.byref(ext_mem), ctypes.byref(desc))
-    #     if result != CUDA_SUCCESS:
-    #         raise RuntimeError(f"cuImportExternalMemory failed: {result} (fd={fd}, size={size}, dedicated={dedicated})")
-    #     return ext_mem
-
 
     def import_external_memory(self, fd: int, size: int, *, dedicated: bool=True) -> ctypes.c_void_p:
-        self.cuda.cuImportExternalMemory.restype  = ctypes.c_int
-        self.cuda.cuImportExternalMemory.argtypes = [
-            ctypes.POINTER(ctypes.c_void_p),
-            ctypes.POINTER(CUDA_EXTERNAL_MEMORY_HANDLE_DESC)
-        ]
+        # self.cuda.cuImportExternalMemory.restype  = ctypes.c_int
+        # self.cuda.cuImportExternalMemory.argtypes = [
+        #     ctypes.POINTER(ctypes.c_void_p),
+        #     ctypes.POINTER(CUDA_EXTERNAL_MEMORY_HANDLE_DESC)
+        # ]
 
         print(ctypes.sizeof(CUDA_EXTERNAL_MEMORY_HANDLE_DESC))
         print(ctypes.sizeof(CUDA_EXTERNAL_MEMORY_BUFFER_DESC))
@@ -662,6 +646,9 @@ class VK2TorchClient:
             # Import external memory and semaphores via CUDA
             if self.cuda_api:
                 try:
+
+
+                    
                     # First, find and select the correct CUDA device by UUID
                     if self.vk_uuid:
                         logger.info("Matching CUDA device with Vulkan UUID...")
@@ -671,6 +658,8 @@ class VK2TorchClient:
                     else:
                         logger.warning("No UUID from Vulkan, using default device 0")
                         self.cuda_api.create_context_on_device(0)
+
+
 
                     self.sem_cam = self.cuda_api.import_external_semaphore(cam_sem_fd)
                     self.sem_done = self.cuda_api.import_external_semaphore(done_sem_fd)
@@ -685,16 +674,14 @@ class VK2TorchClient:
                     self.dev_color = self.cuda_api.get_mapped_buffer(self.ext_mem_color, self.color_readback_bytes, "color")
 
                     self.ext_mem_cam = self.cuda_api.import_external_memory(cam_fd, self.cam_bytes, dedicated=self.cam_dedicated)
-   
-                    
-                    
-                    
                     self.dev_cam = self.cuda_api.get_mapped_buffer(self.ext_mem_cam, self.cam_bytes, "cam")
                     # Now import external memory
                     
 
                     
-                    
+                    for fd in fds:
+                        print(fd)
+                        os.close(fd)          
                     
 
                     logger.info("CUDA external resources imported successfully")
@@ -713,8 +700,7 @@ class VK2TorchClient:
                     self.sem_done = None
             
             # Close file descriptors (CUDA has taken ownership)
-            for fd in fds:
-                os.close(fd)
+
                 
             return True
             
