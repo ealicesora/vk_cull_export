@@ -679,10 +679,7 @@ class VK2TorchClient:
                     
 
                     
-                    for fd in fds:
-                        print(fd)
-                        os.close(fd)          
-                    
+       
 
                     logger.info("CUDA external resources imported successfully")
                 except Exception as cuda_error:
@@ -698,7 +695,10 @@ class VK2TorchClient:
                     self.dev_color = None
                     self.sem_cam = None
                     self.sem_done = None
-            
+                    for fd in fds:
+                        print(fd)
+                        os.close(fd)          
+                    
             # Close file descriptors (CUDA has taken ownership)
 
                 
