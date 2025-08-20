@@ -291,7 +291,7 @@ class CUDADriverAPI:
         
         # Create and populate descriptor
         desc = CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC()
-        desc.type = CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD
+        desc.type = 9
         desc.handle.fd = fd
         desc.flags = 0x00 #0x01  # CUDA_EXTERNAL_SEMAPHORE_HANDLE_FLAG_TIMELINE_SEMAPHORE
         
@@ -588,7 +588,7 @@ class VK2TorchClient:
             return True
             
         except Exception as e:
-            logger.error(f"Failed to receive FDs: {e}" + str(type(e)))
+            logger.error(f"Failed to receive FDs: {e}")
             return False
             
     def update_camera(self, view_matrix: np.ndarray, proj_matrix: np.ndarray) -> bool:
