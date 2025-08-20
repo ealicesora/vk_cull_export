@@ -183,6 +183,30 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
   VkMemoryRequirements memReq;
   vkGetBufferMemoryRequirements(m_device, *buffer, &memReq);
 
+  // Check if this usage+handleType combination supports export
+  VkPhysicalDeviceExternalBufferInfo ebi{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO};
+  ebi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+  ebi.usage = usage;
+
+  VkExternalBufferProperties ebp{VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES};
+  vkGetPhysicalDeviceExternalBufferProperties(m_physicalDevice, &ebi, &ebp);
+
+  if (!(ebp.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT)) {
+    LOGE("ERROR: This buffer usage (0x%X) with OPAQUE_FD handle type is not exportable on this platform\n", usage);
+    LOGE("  External memory features: 0x%X\n", ebp.externalMemoryProperties.externalMemoryFeatures);
+    vkDestroyBuffer(m_device, *buffer, nullptr);
+    return false;
+  }
+
+  // Also check if it's compatible with the memory types we can allocate from
+  if (!(ebp.externalMemoryProperties.compatibleHandleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT)) {
+    LOGE("ERROR: OPAQUE_FD handle type not compatible with this buffer configuration\n");
+    vkDestroyBuffer(m_device, *buffer, nullptr);
+    return false;
+  }
+
+  LOGI("External buffer export check passed (features: 0x%X)\n", ebp.externalMemoryProperties.externalMemoryFeatures);
+
   // Return actual allocated size if requested
   if (actualSize) {
     *actualSize = memReq.size;
@@ -195,7 +219,20 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
   VkMemoryAllocateInfo allocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   allocInfo.pNext = &exportAlloc;
   allocInfo.allocationSize = memReq.size;
-  allocInfo.memoryTypeIndex = findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  
+  // Use the enhanced memory type finder that considers export capability
+  uint32_t memTypeIndex = findMemoryTypeWithExport(memReq.memoryTypeBits, 
+                                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                                    VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT);
+  
+  if (memTypeIndex == UINT32_MAX) {
+    LOGE("Failed to find memory type that supports external export\n");
+    vkDestroyBuffer(m_device, *buffer, nullptr);
+    return false;
+  }
+  
+  allocInfo.memoryTypeIndex = memTypeIndex;
+  LOGI("Using memory type index %u for external buffer\n", memTypeIndex);
 
   result = vkAllocateMemory(m_device, &allocInfo, nullptr, memory);
   if (result != VK_SUCCESS) {
@@ -374,6 +411,21 @@ bool ExternalMemoryManager::sendHandshakeInfo() {
 #ifdef _WIN32
   return false;
 #else
+  // Get device UUID for GPU matching
+  VkPhysicalDeviceIDProperties idProps{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+  VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+  props2.pNext = &idProps;
+  vkGetPhysicalDeviceProperties2(m_physicalDevice, &props2);
+  
+  // Convert UUID to hex string (16 bytes -> 32 hex chars)
+  std::ostringstream uuidHex;
+  uuidHex << std::hex << std::setfill('0');
+  for (int i = 0; i < VK_UUID_SIZE; i++) {
+    uuidHex << std::setw(2) << static_cast<unsigned int>(idProps.deviceUUID[i]);
+  }
+  
+  LOGI("Vulkan device UUID: %s\n", uuidHex.str().c_str());
+  
   // Create simple JSON manually
   std::ostringstream json;
   json << "{"
@@ -383,6 +435,7 @@ bool ExternalMemoryManager::sendHandshakeInfo() {
        << "\"color_readback_bytes\":" << m_colorBufferSize << ","
        << "\"row_pitch\":" << (m_config.width * 4) << ","
        << "\"cam_bytes\":" << m_cameraBufferSize << ","
+       << "\"vk_uuid\":\"" << uuidHex.str() << "\","
        << "\"sem_init\":{\"cam\":0,\"done\":0}"
        << "}";
 
@@ -555,6 +608,27 @@ uint32_t ExternalMemoryManager::findMemoryType(uint32_t typeFilter, VkMemoryProp
 
   LOGE("Failed to find suitable memory type\n");
   return 0; // This should not happen with device-local memory
+}
+
+uint32_t ExternalMemoryManager::findMemoryTypeWithExport(uint32_t typeFilter, VkMemoryPropertyFlags properties, 
+                                                         VkExternalMemoryHandleTypeFlagBits handleType) {
+  VkPhysicalDeviceMemoryProperties memProps;
+  vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProps);
+
+  for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+    if ((typeFilter & (1 << i)) && (memProps.memoryTypes[i].propertyFlags & properties) == properties) {
+      // For now, we trust that if the buffer export check passed,
+      // and this memory type matches our requirements, it should work.
+      // A more thorough check would require querying each memory type's export capabilities,
+      // but Vulkan doesn't provide a direct API for that on a per-memory-type basis.
+      
+      LOGI("Found memory type %u with properties 0x%X for external export\n", i, properties);
+      return i;
+    }
+  }
+
+  LOGE("Failed to find suitable memory type with export capability\n");
+  return UINT32_MAX; // Invalid memory type index
 }
 
 bool ExternalMemoryManager::checkExtensionSupport(const char* extensionName) {

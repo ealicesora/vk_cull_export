@@ -53,6 +53,27 @@ CUDA_SUCCESS = 0
 CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD = 1
 CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD = 1
 
+
+
+
+class CUDA_EXTERNAL_MEMORY_HANDLE_DESC(ctypes.Structure):
+    class Handle(ctypes.Union):
+        _fields_ = [("fd", ctypes.c_int),
+                    ("win32", ctypes.c_void_p),
+                    ("nvSciBufObject", ctypes.c_void_p)]
+    _anonymous_ = ("handle",)
+    _fields_ = [("type", ctypes.c_uint),
+                ("handle", Handle),
+                ("size", ctypes.c_ulonglong),
+                ("flags", ctypes.c_uint),
+                ("reserved", ctypes.c_uint * 16)]
+
+CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD = 1
+CUDA_SUCCESS = 0
+CUDA_EXTERNAL_MEMORY_DEDICATED = 1
+
+
+
 # Camera structure matching shaderio.h FrameConstants
 class FrameConstants(ctypes.Structure):
     """
@@ -143,6 +164,14 @@ class CUDADriverAPI:
             
             self.cuda.cuWaitExternalSemaphoresAsync.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p]
             self.cuda.cuWaitExternalSemaphoresAsync.restype = ctypes.c_int
+            
+            # Add UUID function
+            self.cuda.cuDeviceGetUuid.argtypes = [ctypes.POINTER(ctypes.c_ubyte * 16), ctypes.c_int]
+            self.cuda.cuDeviceGetUuid.restype = ctypes.c_int
+            
+            # Add device count function
+            self.cuda.cuDeviceGetCount.argtypes = [ctypes.POINTER(ctypes.c_int)]
+            self.cuda.cuDeviceGetCount.restype = ctypes.c_int
         except AttributeError as e:
             logger.warning(f"Some CUDA external memory functions not available: {e}")
         
@@ -150,27 +179,71 @@ class CUDADriverAPI:
         result = self.cuda.cuInit(0)
         if result != CUDA_SUCCESS:
             raise RuntimeError(f"cuInit failed: {result}")
-            
-        # Get or create context
-        ctx = ctypes.c_void_p()
-        result = self.cuda.cuCtxGetCurrent(ctypes.byref(ctx))
-        if result != CUDA_SUCCESS or not ctx.value:
-            # Create new context
-            device = ctypes.c_int(0)
-            result = self.cuda.cuCtxCreate_v2(ctypes.byref(ctx), 0, device)
+        
+        # Don't create context yet - wait until we know which device to use
+        self.context = None
+        
+        # Don't create stream yet - wait until context is created
+        self.stream = None
+        
+        logger.info("CUDA driver initialized (context not created yet)")
+    
+    def find_device_by_uuid(self, target_uuid_hex: str) -> int:
+        """Find CUDA device matching the given UUID hex string."""
+        # Get device count
+        device_count = ctypes.c_int()
+        result = self.cuda.cuDeviceGetCount(ctypes.byref(device_count))
+        if result != CUDA_SUCCESS:
+            raise RuntimeError(f"cuDeviceGetCount failed: {result}")
+        
+        logger.info(f"Found {device_count.value} CUDA device(s)")
+        
+        # Convert hex string to bytes for comparison
+        target_uuid_bytes = bytes.fromhex(target_uuid_hex)
+        
+        # Check each device
+        for i in range(device_count.value):
+            # Get device UUID
+            uuid_bytes = (ctypes.c_ubyte * 16)()
+            result = self.cuda.cuDeviceGetUuid(uuid_bytes, i)
             if result != CUDA_SUCCESS:
-                raise RuntimeError(f"cuCtxCreate failed: {result}")
+                logger.warning(f"Failed to get UUID for device {i}: {result}")
+                continue
+            
+            # Convert to bytes for comparison
+            device_uuid = bytes(uuid_bytes)
+            device_uuid_hex = device_uuid.hex()
+            
+            logger.info(f"  Device {i} UUID: {device_uuid_hex}")
+            
+            if device_uuid == target_uuid_bytes:
+                logger.info(f"  ✓ Matched! Using CUDA device {i}")
+                return i
+        
+        # No match found
+        raise RuntimeError(f"No CUDA device found matching UUID: {target_uuid_hex}")
+    
+    def create_context_on_device(self, device_id: int):
+        """Create CUDA context on specific device."""
+        if self.context:
+            logger.warning("Context already exists")
+            return
+            
+        ctx = ctypes.c_void_p()
+        result = self.cuda.cuCtxCreate_v2(ctypes.byref(ctx), 0, device_id)
+        if result != CUDA_SUCCESS:
+            raise RuntimeError(f"cuCtxCreate on device {device_id} failed: {result}")
         
         self.context = ctx
+        logger.info(f"Created CUDA context on device {device_id}")
         
-        # Create stream
+        # Now create stream
         stream = ctypes.c_void_p()
         result = self.cuda.cuStreamCreate(ctypes.byref(stream), 0)
         if result != CUDA_SUCCESS:
             raise RuntimeError(f"cuStreamCreate failed: {result}")
         self.stream = stream
-        
-        logger.info("CUDA context and stream initialized")
+        logger.info("CUDA stream created")
         
     def import_external_memory(self, fd: int, size: int) -> ctypes.c_void_p:
         """Import external memory from file descriptor."""
@@ -253,7 +326,7 @@ class CUDADriverAPI:
         desc = CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC()
         desc.type = CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD
         desc.handle.fd = fd
-        desc.flags = 0x01  # CUDA_EXTERNAL_SEMAPHORE_HANDLE_FLAG_TIMELINE_SEMAPHORE
+        desc.flags = 0 #0x01  # CUDA_EXTERNAL_SEMAPHORE_HANDLE_FLAG_TIMELINE_SEMAPHORE
         
         # Import external semaphore
         ext_sem = ctypes.c_void_p()
@@ -263,6 +336,31 @@ class CUDADriverAPI:
             
         return ext_sem
         
+
+    def import_external_memory_f(self, fd: int, size: int, *, dedicated: bool=False) -> ctypes.c_void_p:
+        # 设原型（只设一次；可移到 __init__）
+        self.cuda.cuImportExternalMemory.restype  = ctypes.c_int
+        self.cuda.cuImportExternalMemory.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(CUDA_EXTERNAL_MEMORY_HANDLE_DESC)
+        ]
+
+        desc = CUDA_EXTERNAL_MEMORY_HANDLE_DESC()
+        # 清零（ctypes 默认已零，但手动更放心）
+        ctypes.memset(ctypes.byref(desc), 0, ctypes.sizeof(desc))
+
+        desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD
+        desc.fd   = fd
+        desc.size = ctypes.c_ulonglong(size)
+        desc.flags = CUDA_EXTERNAL_MEMORY_DEDICATED if dedicated else 0
+
+        ext_mem = ctypes.c_void_p()
+        result = self.cuda.cuImportExternalMemory(ctypes.byref(ext_mem), ctypes.byref(desc))
+        if result != CUDA_SUCCESS:
+            raise RuntimeError(f"cuImportExternalMemory failed: {result} (fd={fd}, size={size}, dedicated={dedicated})")
+        return ext_mem
+
+
     def signal_semaphore(self, semaphore: ctypes.c_void_p, value: int, stream: Optional[ctypes.c_void_p] = None):
         """Signal external semaphore with timeline value."""
         if stream is None:
@@ -350,6 +448,7 @@ class VK2TorchClient:
         self.color_readback_bytes = 0
         self.row_pitch = 0
         self.cam_bytes = 0
+        self.vk_uuid = None
         
         # CUDA resources
         self.cuda_api = None
@@ -418,9 +517,12 @@ class VK2TorchClient:
             self.color_readback_bytes = handshake['color_readback_bytes']
             self.row_pitch = handshake['row_pitch']
             self.cam_bytes = handshake['cam_bytes']
+            self.vk_uuid = handshake.get('vk_uuid', None)
             
             logger.info(f"Handshake: {self.width}x{self.height} {self.format}, "
                        f"color={self.color_readback_bytes} bytes, cam={self.cam_bytes} bytes")
+            if self.vk_uuid:
+                logger.info(f"Vulkan GPU UUID: {self.vk_uuid}")
             
             # Receive file descriptors
             if not self._receive_fds():
@@ -461,22 +563,35 @@ class VK2TorchClient:
             logger.info(f"  Camera Semaphore FD: {cam_sem_fd}")
             logger.info(f"  Done Semaphore FD:   {done_sem_fd}")
             logger.info("==================================")
-            
+            print(os.readlink(f"/proc/{os.getpid()}/fd/{cam_fd}"))
+
             # Import external memory and semaphores via CUDA
             if self.cuda_api:
                 try:
-                    print("self.cam_bytes",self.cam_bytes)
-                    self.ext_mem_cam = self.cuda_api.import_external_memory(cam_fd, self.cam_bytes)
-                    print('hit')
+                    # First, find and select the correct CUDA device by UUID
+                    if self.vk_uuid:
+                        logger.info("Matching CUDA device with Vulkan UUID...")
+                        device_id = self.cuda_api.find_device_by_uuid(self.vk_uuid)
+                        self.cuda_api.create_context_on_device(device_id)
+                        
+                    else:
+                        logger.warning("No UUID from Vulkan, using default device 0")
+                        self.cuda_api.create_context_on_device(0)
+
+                    print('sem_import ok')
+                    self.ext_mem_color = self.cuda_api.import_external_memory_f(color_fd, self.color_readback_bytes)
+                    self.ext_mem_cam = self.cuda_api.import_external_memory_f(cam_fd, self.cam_bytes)
                     
-                    self.ext_mem_color = self.cuda_api.import_external_memory(color_fd, self.color_readback_bytes)
-                    print('hit')
+                    
+
+                    # Now import external memory
+                    self.sem_cam = self.cuda_api.import_external_semaphore(cam_sem_fd)
+                    self.sem_done = self.cuda_api.import_external_semaphore(done_sem_fd)
+
                     self.dev_cam = self.cuda_api.get_mapped_buffer(self.ext_mem_cam, self.cam_bytes)
                     self.dev_color = self.cuda_api.get_mapped_buffer(self.ext_mem_color, self.color_readback_bytes)
                     
-                    self.sem_cam = self.cuda_api.import_external_semaphore(cam_sem_fd)
-                    self.sem_done = self.cuda_api.import_external_semaphore(done_sem_fd)
-                    
+
                     logger.info("CUDA external resources imported successfully")
                 except Exception as cuda_error:
                     logger.warning(f"CUDA import failed: {cuda_error}")

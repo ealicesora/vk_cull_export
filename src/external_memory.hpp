@@ -117,6 +117,8 @@ private:
 
   // Helper functions
   uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
+  uint32_t findMemoryTypeWithExport(uint32_t typeFilter, VkMemoryPropertyFlags properties, 
+                                     VkExternalMemoryHandleTypeFlagBits handleType);
   bool checkExtensionSupport(const char* extensionName);
 };
 
