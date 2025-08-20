@@ -228,7 +228,7 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
   const bool needsDedicated = (feats & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT) != 0;
   
   // FORCE DEDICATED ALLOCATION FOR TESTING
-  const bool forceDedicated = false;  // Disabled - use only if required by driver
+  const bool forceDedicated = true;  // mus be true
   const bool useDedicated = needsDedicated || forceDedicated;
   
   if (useDedicated) {
