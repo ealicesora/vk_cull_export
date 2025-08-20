@@ -92,13 +92,7 @@ bool ExternalMemoryManager::init(VkDevice device, VkPhysicalDevice physicalDevic
   LOGI("  Actual allocated size: %zu bytes (dedicated: %s)\n", 
        m_cameraBufferSize, m_cameraBufferDedicated ? "yes" : "no");
        
-  // Map camera buffer for CPU access
-  VkResult result = vkMapMemory(m_device, m_cameraMemory, 0, VK_WHOLE_SIZE, 0, &m_cameraBufferMapped);
-  if (result != VK_SUCCESS) {
-    LOGE("Failed to map camera buffer memory: %d\n", result);
-    return false;
-  }
-  LOGI("Camera buffer mapped at %p\n", m_cameraBufferMapped);
+  // Camera buffer is device-local and will be written by CUDA, not mapped for CPU access
 
   LOGI("Creating color readback buffer (size: %zu bytes)\n", colorBufferSize);
   int colorFd = -1;
@@ -112,13 +106,7 @@ bool ExternalMemoryManager::init(VkDevice device, VkPhysicalDevice physicalDevic
   LOGI("  Actual allocated size: %zu bytes (dedicated: %s)\n", 
        m_colorBufferSize, m_colorBufferDedicated ? "yes" : "no");
        
-  // Map color buffer for CPU access (optional - could be unmapped for performance)
-  result = vkMapMemory(m_device, m_colorReadbackMemory, 0, VK_WHOLE_SIZE, 0, &m_colorBufferMapped);
-  if (result != VK_SUCCESS) {
-    LOGE("Failed to map color buffer memory: %d\n", result);
-    return false;
-  }
-  LOGI("Color buffer mapped at %p\n", m_colorBufferMapped);
+  // Color buffer is device-local and will be accessed by CUDA, not mapped for CPU access
 
   LOGI("Creating timeline semaphores\n");
   int camSemFd = -1, doneSemFd = -1;
@@ -158,15 +146,7 @@ void ExternalMemoryManager::deinit() {
     unlink(m_config.udsPath.c_str());
   }
 
-  // Unmap memory before destroying resources
-  if (m_cameraBufferMapped) {
-    vkUnmapMemory(m_device, m_cameraMemory);
-    m_cameraBufferMapped = nullptr;
-  }
-  if (m_colorBufferMapped) {
-    vkUnmapMemory(m_device, m_colorReadbackMemory);
-    m_colorBufferMapped = nullptr;
-  }
+  // No memory was mapped (using device-local memory)
 
   // Destroy Vulkan resources
   if (m_cameraBuffer != VK_NULL_HANDLE) {
@@ -296,9 +276,13 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
     allocInfo.pNext = &exportAlloc;
   }
   
+  // Use device-local memory for best performance
+  // The memory will be accessed by CUDA, not the host CPU
+  VkMemoryPropertyFlags requiredProps = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  
   // Use the enhanced memory type finder that considers export capability
   uint32_t memTypeIndex = findMemoryTypeWithExport(memReq.memoryTypeBits, 
-                                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                                    requiredProps,
                                                     VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT);
   
   if (memTypeIndex == UINT32_MAX) {
@@ -642,8 +626,15 @@ bool ExternalMemoryManager::waitForCameraReady(uint64_t frameNumber) {
   waitInfo.pSemaphores = &m_cameraSemaphore;
   waitInfo.pValues = &frameNumber;
 
-  VkResult result = vkWaitSemaphores(m_device, &waitInfo, UINT64_MAX);
-  if (result != VK_SUCCESS) {
+  // Use a timeout of 100ms instead of waiting forever
+  // This allows the app to continue rendering even if Python isn't sending frames
+  uint64_t timeout = 100000000; // 100ms in nanoseconds
+  VkResult result = vkWaitSemaphores(m_device, &waitInfo, timeout);
+  
+  if (result == VK_TIMEOUT) {
+    // Timeout is not an error - just means Python hasn't sent camera data yet
+    return false;
+  } else if (result != VK_SUCCESS) {
     LOGE("Failed to wait for camera semaphore (frame %lu): %d\n", frameNumber, result);
     return false;
   }
@@ -963,21 +954,10 @@ bool ExternalMemoryManager::readCameraData(void* destination, size_t size) {
 #ifdef _WIN32
   return false;
 #else
-  if (!isConnected() || !m_cameraBufferMapped) {
-    LOGE("Cannot read camera data: not connected or buffer not mapped\n");
-    return false;
-  }
-  
-  if (size > m_cameraBufferSize) {
-    LOGE("Requested camera data size %zu exceeds buffer size %zu\n", size, m_cameraBufferSize);
-    return false;
-  }
-  
-  // Copy data from mapped memory
-  memcpy(destination, m_cameraBufferMapped, size);
-  
-  LOGI("Read %zu bytes of camera data from mapped buffer\n", size);
-  return true;
+  // Camera data is now written directly by Python via CUDA
+  // This function is no longer used since we don't map the buffer
+  // The camera data is already in the device buffer when Python signals camReady
+  return false;
 #endif
 }
 

@@ -34,7 +34,7 @@ def capture_frames():
     vulkan_process = subprocess.Popen(cmd, cwd=app_path.parent.parent, 
                                      stdout=subprocess.DEVNULL, 
                                      stderr=subprocess.DEVNULL)
-    time.sleep(3)
+    time.sleep(5)  # Give more time for Vulkan app to start
     
     try:
         # Import the original client with fallbacks

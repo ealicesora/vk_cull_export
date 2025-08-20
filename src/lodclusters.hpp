@@ -247,5 +247,8 @@ private:
     assert(offset < sizeof(m_rendererConfig));
     return memcmp(&val, reinterpret_cast<const uint8_t*>(&m_streamingConfigLast) + offset, sizeof(T)) != 0;
   }
+  
+  // External memory integration
+  uint64_t m_currentExternalFrameNumber = 0;
 };
 }  // namespace lodclusters

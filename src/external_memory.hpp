@@ -83,7 +83,13 @@ public:
   void cmdCopyImageToColorBuffer(VkCommandBuffer cmd, VkImage srcImage, VkImageLayout srcLayout, uint32_t width, uint32_t height);
   
   // Frame counter management
-  uint64_t getNextFrameNumber() { return m_currentFrameNumber++; }
+  uint64_t getNextFrameNumber() { 
+    if (m_currentFrameNumber == 0) {
+      // Skip frame 0 since Python starts at 1
+      m_currentFrameNumber = 1;
+    }
+    return m_currentFrameNumber++; 
+  }
   uint64_t getCurrentFrameNumber() const { return m_currentFrameNumber; }
 
   // Getters
