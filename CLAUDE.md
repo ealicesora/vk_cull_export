@@ -319,3 +319,4 @@ with VK2TorchClient() as client:
 - **Synchronization**: Timeline semaphores coordinate camera parameter updates and frame completion between Python and Vulkan
 - **Data Format**: R8G8B8A8_UNORM images with proper row pitch alignment for CUDA tensor mapping
 - **Memory Management**: Exportable device-local buffers for camera parameters and color readback
+- There is a python env with cupy, etc called vk2torch, please use it to test

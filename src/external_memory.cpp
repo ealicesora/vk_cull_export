@@ -21,6 +21,8 @@
 #include "external_memory.hpp"
 #include <cstdio>
 #include <cstring>
+#include <chrono>
+#include <thread>
 
 // Simple logging macros
 #define LOGI(...) printf("[INFO] " __VA_ARGS__)
@@ -122,6 +124,9 @@ bool ExternalMemoryManager::init(VkDevice device, VkPhysicalDevice physicalDevic
 
 void ExternalMemoryManager::deinit() {
   if (m_device == VK_NULL_HANDLE) return;
+  
+  // Stop echo thread if running
+  stopSemaphoreEchoThread();
 
   // Close client socket
   if (m_clientSocket >= 0) {
@@ -223,7 +228,7 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
   const bool needsDedicated = (feats & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT) != 0;
   
   // FORCE DEDICATED ALLOCATION FOR TESTING
-  const bool forceDedicated = true;  // Always use dedicated for testing
+  const bool forceDedicated = false;  // Disabled - use only if required by driver
   const bool useDedicated = needsDedicated || forceDedicated;
   
   if (useDedicated) {
@@ -483,7 +488,8 @@ bool ExternalMemoryManager::sendHandshakeInfo() {
        << "\"cam_dedicated\":" << (m_cameraBufferDedicated ? "true" : "false") << ","
        << "\"color_dedicated\":" << (m_colorBufferDedicated ? "true" : "false") << ","
        << "\"vk_uuid\":\"" << uuidHex.str() << "\","
-       << "\"sem_init\":{\"cam\":0,\"done\":0}"
+       << "\"sem_init\":{\"cam\":0,\"done\":0},"
+       << "\"semaphore_test_enabled\":true"
        << "}";
 
   std::string jsonStr = json.str();
@@ -546,6 +552,13 @@ bool ExternalMemoryManager::sendHandshakeInfo() {
   }
 
   LOGI("Handshake completed successfully\n");
+  
+  // Start semaphore echo thread if requested for testing
+  if (getenv("VK2TORCH_TEST_SEMAPHORE")) {
+    LOGI("Starting semaphore echo thread for testing\n");
+    startSemaphoreEchoThread();
+  }
+  
   return true;
 #endif
 }
@@ -721,6 +734,105 @@ bool ExternalMemoryManager::isConnected() const {
   
   // Data available, connection is alive
   return true;
+#endif
+}
+
+void ExternalMemoryManager::startSemaphoreEchoThread() {
+#ifndef _WIN32
+  if (m_echoThread) {
+    return; // Already running
+  }
+  
+  m_echoThreadRunning = true;
+  m_echoThread = new std::thread(&ExternalMemoryManager::semaphoreEchoWorker, this);
+  LOGI("Semaphore echo thread started\n");
+#endif
+}
+
+void ExternalMemoryManager::stopSemaphoreEchoThread() {
+#ifndef _WIN32
+  if (!m_echoThread) {
+    return;
+  }
+  
+  m_echoThreadRunning = false;
+  if (m_echoThread->joinable()) {
+    m_echoThread->join();
+  }
+  delete m_echoThread;
+  m_echoThread = nullptr;
+  LOGI("Semaphore echo thread stopped\n");
+#endif
+}
+
+void ExternalMemoryManager::semaphoreEchoWorker() {
+#ifndef _WIN32
+  LOGI("Semaphore echo worker started - waiting for test values\n");
+  
+  uint64_t lastValue = 0;
+  
+  while (m_echoThreadRunning) {
+    // Check camera semaphore for new values
+    VkSemaphoreWaitInfo waitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    waitInfo.semaphoreCount = 1;
+    waitInfo.pSemaphores = &m_cameraSemaphore;
+    
+    // Try to wait for next value with timeout
+    uint64_t testValue = lastValue + 1;
+    
+    // Special test values we echo back immediately
+    if (testValue < 1000) {
+      waitInfo.pValues = &testValue;
+      
+      // Wait with 100ms timeout
+      VkResult result = vkWaitSemaphores(m_device, &waitInfo, 100000000); // 100ms in nanoseconds
+      
+      if (result == VK_SUCCESS) {
+        LOGI("Echo thread: Received semaphore value %lu, echoing back...\n", testValue);
+        
+        // Echo the value back on done semaphore
+        VkTimelineSemaphoreSubmitInfo timelineInfo{VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+        timelineInfo.signalSemaphoreValueCount = 1;
+        timelineInfo.pSignalSemaphoreValues = &testValue;
+        
+        VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submitInfo.pNext = &timelineInfo;
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = &m_frameDoneSemaphore;
+        
+        // Need a queue for signaling - this is a limitation
+        // In a real implementation, we'd need to get a queue handle
+        // For now, we'll just signal directly using vkSignalSemaphore
+        VkSemaphoreSignalInfo signalInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO};
+        signalInfo.semaphore = m_frameDoneSemaphore;
+        signalInfo.value = testValue;
+        
+        PFN_vkSignalSemaphore vkSignalSemaphore = 
+          (PFN_vkSignalSemaphore)vkGetDeviceProcAddr(m_device, "vkSignalSemaphore");
+        
+        if (vkSignalSemaphore) {
+          result = vkSignalSemaphore(m_device, &signalInfo);
+          if (result == VK_SUCCESS) {
+            LOGI("Echo thread: Successfully echoed value %lu\n", testValue);
+            lastValue = testValue;
+          } else {
+            LOGE("Echo thread: Failed to signal semaphore: %d\n", result);
+          }
+        } else {
+          LOGE("Echo thread: vkSignalSemaphore not available\n");
+        }
+      } else if (result == VK_TIMEOUT) {
+        // Timeout is fine, just continue
+      } else {
+        LOGE("Echo thread: Wait failed with error %d\n", result);
+      }
+    }
+    
+    // Small sleep to avoid busy waiting
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  
+  LOGI("Semaphore echo worker stopped\n");
 #endif
 }
 

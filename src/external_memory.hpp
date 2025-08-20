@@ -23,6 +23,8 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <thread>
+#include <atomic>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -81,6 +83,10 @@ public:
   uint32_t getWidth() const { return m_config.width; }
   uint32_t getHeight() const { return m_config.height; }
   VkFormat getFormat() const { return m_config.format; }
+  
+  // Semaphore test support
+  void startSemaphoreEchoThread();
+  void stopSemaphoreEchoThread();
 
   // Vulkan device extensions required
   static std::vector<const char*> getRequiredDeviceExtensions() {
@@ -119,12 +125,17 @@ private:
   // Track if buffers use dedicated allocation
   bool m_cameraBufferDedicated = false;
   bool m_colorBufferDedicated = false;
+  
+  // Semaphore echo thread
+  std::thread* m_echoThread = nullptr;
+  std::atomic<bool> m_echoThreadRunning{false};
 
   // Helper functions
   uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
   uint32_t findMemoryTypeWithExport(uint32_t typeFilter, VkMemoryPropertyFlags properties, 
                                      VkExternalMemoryHandleTypeFlagBits handleType);
   bool checkExtensionSupport(const char* extensionName);
+  void semaphoreEchoWorker();
 };
 
 } // namespace lodclusters

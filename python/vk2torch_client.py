@@ -61,8 +61,74 @@ class CUDA_EXTERNAL_MEMORY_BUFFER_DESC(ctypes.Structure):
         ("offset", ctypes.c_uint64),
         ("size",   ctypes.c_uint64),
         ("flags",  ctypes.c_uint),
+        ("reserved", ctypes.c_uint),
+    ]
+
+class CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC(ctypes.Structure):
+    class Handle(ctypes.Union):
+        _fields_ = [
+            ("fd", ctypes.c_int),
+            ("win32", ctypes.c_void_p),  # Not used on Linux
+            ("nvSciSyncObj", ctypes.c_void_p),  # Not used
+        ]
+    
+    _fields_ = [
+        ("type", ctypes.c_uint),
+        ("handle", Handle),
+        ("flags", ctypes.c_uint),
         ("reserved", ctypes.c_uint * 16),
     ]
+        
+
+class _SigFence(ctypes.Structure):
+    _fields_ = [
+        ("value", ctypes.c_uint64),
+        ("reserved", ctypes.c_uint * 16),   # ★ 必须有
+    ]
+
+class _SigKeyedMutex(ctypes.Structure):
+    _fields_ = [
+        ("key", ctypes.c_uint),
+        ("timeoutMs", ctypes.c_uint),
+        ("reserved", ctypes.c_uint * 14),   # 保持整体大小一致
+    ]
+
+class _SigParamsUnion(ctypes.Union):
+    _fields_ = [("fence", _SigFence), ("keyedMutex", _SigKeyedMutex)]
+
+class CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS(ctypes.Structure):
+    _fields_ = [
+        ("params", _SigParamsUnion),
+        ("flags", ctypes.c_uint),
+        ("reserved", ctypes.c_uint * 16),
+    ]
+
+class _WaitFence(ctypes.Structure):
+    _fields_ = [
+        ("value", ctypes.c_uint64),
+        ("reserved", ctypes.c_uint * 16),   # ★ 必须有
+    ]
+
+class _WaitKeyedMutex(ctypes.Structure):
+    _fields_ = [
+        ("key", ctypes.c_uint),
+        ("timeoutMs", ctypes.c_uint),
+        ("reserved", ctypes.c_uint * 14),
+    ]
+
+class _WaitParamsUnion(ctypes.Union):
+    _fields_ = [("fence", _WaitFence), ("keyedMutex", _WaitKeyedMutex)]
+
+class CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS(ctypes.Structure):
+    _fields_ = [
+        ("params", _WaitParamsUnion),
+        ("flags", ctypes.c_uint),
+        ("reserved", ctypes.c_uint * 16),
+    ]
+
+
+
+
 
 
 CUdeviceptr = ctypes.c_uint64
@@ -170,13 +236,13 @@ class CUDADriverAPI:
                 ctypes.c_void_p,                          # CUexternalMemory extMem
                 ctypes.POINTER(CUDA_EXTERNAL_MEMORY_BUFFER_DESC)  # const desc*
             ]
-            self.cuda.cuImportExternalSemaphore.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+            self.cuda.cuImportExternalSemaphore.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC)]
             self.cuda.cuImportExternalSemaphore.restype = ctypes.c_int
             
-            self.cuda.cuSignalExternalSemaphoresAsync.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p]
+            self.cuda.cuSignalExternalSemaphoresAsync.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS), ctypes.c_uint, ctypes.c_void_p]
             self.cuda.cuSignalExternalSemaphoresAsync.restype = ctypes.c_int
             
-            self.cuda.cuWaitExternalSemaphoresAsync.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p]
+            self.cuda.cuWaitExternalSemaphoresAsync.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS), ctypes.c_uint, ctypes.c_void_p]
             self.cuda.cuWaitExternalSemaphoresAsync.restype = ctypes.c_int
             
             # Add UUID function
@@ -260,7 +326,7 @@ class CUDADriverAPI:
         logger.info("CUDA stream created")
         
         
-    def get_mapped_buffer(self, ext_mem: ctypes.c_void_p, size: int, name: str) -> ctypes.c_void_p:
+    def get_mapped_buffer(self, ext_mem: ctypes.c_void_p, size: int, name: str, dedicated: bool = False) -> ctypes.c_void_p:
         """Get device pointer from external memory."""
         # Define CUDA_EXTERNAL_MEMORY_BUFFER_DESC structure
         # class CUDA_EXTERNAL_MEMORY_BUFFER_DESC(ctypes.Structure):
@@ -276,11 +342,13 @@ class CUDADriverAPI:
         ctypes.memset(ctypes.byref(desc), 0, ctypes.sizeof(desc))
         desc.offset = 0
         desc.size = size
+        # For dedicated memory, flags should be 0
         desc.flags = 0
         
         # Get mapped buffer
         # dev_ptr = ctypes.c_void_p()
         dev_ptr = CUdeviceptr(0)
+        print(ext_mem)
         result = self.cuda.cuExternalMemoryGetMappedBuffer(ctypes.byref(dev_ptr), ext_mem, ctypes.byref(desc))
         if result != CUDA_SUCCESS:
             print('error in'+name)
@@ -291,21 +359,7 @@ class CUDADriverAPI:
     def import_external_semaphore(self, fd: int) -> ctypes.c_void_p:
         """Import external semaphore from file descriptor."""
         # Define CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC structure
-        class CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC(ctypes.Structure):
-            class Handle(ctypes.Union):
-                _fields_ = [
-                    ("fd", ctypes.c_int),
-                    ("win32", ctypes.c_void_p),  # Not used on Linux
-                    ("nvSciSyncObj", ctypes.c_void_p),  # Not used
-                ]
-            
-            _fields_ = [
-                ("type", ctypes.c_uint),
-                ("handle", Handle),
-                ("flags", ctypes.c_uint),
-                ("reserved", ctypes.c_uint * 16),
-            ]
-        
+
         # Create and populate descriptor
         desc = CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC()
         ctypes.memset(ctypes.byref(desc), 0, ctypes.sizeof(desc))
@@ -346,64 +400,76 @@ class CUDADriverAPI:
         return ext_mem
 
 
-    def signal_semaphore(self, semaphore: ctypes.c_void_p, value: int, stream: Optional[ctypes.c_void_p] = None):
-        """Signal external semaphore with timeline value."""
-        if stream is None:
-            stream = self.stream
+    # def signal_semaphore(self, semaphore: ctypes.c_void_p, value: int, stream: Optional[ctypes.c_void_p] = None):
+    #     """Signal external semaphore with timeline value."""
+    #     if stream is None:
+    #         stream = self.stream
+
         
-        # Define CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS structure
-        class CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS(ctypes.Structure):
-            class Value(ctypes.Union):
-                _fields_ = [
-                    ("fence", ctypes.c_ulonglong),  # For timeline semaphores
-                    ("reserved", ctypes.c_uint),
-                ]
+    #     # Create and populate parameters
+    #     params = CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS()
+    #     ctypes.memset(ctypes.byref(params), 0, ctypes.sizeof(params))
+    #     params.params.fence.value = ctypes.c_uint64(value)
+    #     params.flags = 0
+        
+        
+
+    #     result = self.cuda.cuSignalExternalSemaphoresAsync(
+    #         (ctypes.c_void_p * 1)(semaphore),
+    #         (CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS * 1)(params),
+    #         1, ctypes.c_void_p(0)
+    #     )
+
+    #     if result != CUDA_SUCCESS:
+    #         raise RuntimeError(f"cuSignalExternalSemaphoresAsync failed: {result}")
+    #     print("cuSignalExternalSemaphoresAsync succeed")
+    #     # Synchronize stream to ensure signal is sent
+    #     self.synchronize_stream(stream)
             
-            _fields_ = [
-                ("params", Value),
-                ("flags", ctypes.c_uint),
-                ("reserved", ctypes.c_uint * 16),
-            ]
-        
-        # Create and populate parameters
+
+    def signal_semaphore(self, semaphore, value:int, stream=None):
+        if stream is None: stream = self.stream
         params = CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS()
-        params.params.fence = value
+        ctypes.memset(ctypes.byref(params), 0, ctypes.sizeof(params))
+
+        params.params.fence.value = ctypes.c_uint64(value)     # ★ 关键
+
         params.flags = 0
-        
-        # Signal semaphore
-        result = self.cuda.cuSignalExternalSemaphoresAsync(ctypes.byref(semaphore), ctypes.byref(params), 1, stream)
-        if result != CUDA_SUCCESS:
-            raise RuntimeError(f"cuSignalExternalSemaphoresAsync failed: {result}")
-            
+
+        err = self.cuda.cuSignalExternalSemaphoresAsync(
+            (ctypes.c_void_p * 1)(semaphore),
+            (CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS * 1)(params),
+            1,
+             ctypes.c_void_p(0),
+        )
+
+        if err != CUDA_SUCCESS:
+            raise RuntimeError(f"cuSignalExternalSemaphoresAsync failed: {err}")
+        self.synchronize_stream(stream)
+
     def wait_semaphore(self, semaphore: ctypes.c_void_p, value: int, stream: Optional[ctypes.c_void_p] = None):
         """Wait for external semaphore timeline value."""
         if stream is None:
             stream = self.stream
         
-        # Define CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS structure
-        class CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS(ctypes.Structure):
-            class Value(ctypes.Union):
-                _fields_ = [
-                    ("fence", ctypes.c_ulonglong),  # For timeline semaphores
-                    ("reserved", ctypes.c_uint),
-                ]
-            
-            _fields_ = [
-                ("params", Value),
-                ("flags", ctypes.c_uint),
-                ("reserved", ctypes.c_uint * 16),
-            ]
+
         
         # Create and populate parameters
         params = CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS()
-        params.params.fence = value
+        params.params.fence.value = ctypes.c_uint64(value)
         params.flags = 0
         
         # Wait on semaphore
-        result = self.cuda.cuWaitExternalSemaphoresAsync(ctypes.byref(semaphore), ctypes.byref(params), 1, stream)
+        result = self.cuda.cuWaitExternalSemaphoresAsync(
+            (ctypes.c_void_p * 1)(semaphore),                 # ✅ 数组
+            (CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS * 1)(params),
+            1,
+            stream if stream is not None else ctypes.c_void_p(0),
+        )
+
         if result != CUDA_SUCCESS:
             raise RuntimeError(f"cuWaitExternalSemaphoresAsync failed: {result}")
-            
+        print("wait cuWaitExternalSemaphoresAsync succeed")
     def synchronize_stream(self, stream: Optional[ctypes.c_void_p] = None):
         """Synchronize CUDA stream."""
         if stream is None:
@@ -571,16 +637,22 @@ class VK2TorchClient:
                     self.sem_cam = self.cuda_api.import_external_semaphore(cam_sem_fd)
                     self.sem_done = self.cuda_api.import_external_semaphore(done_sem_fd)
                     print('sem_import ok')
-                    self.ext_mem_cam = self.cuda_api.import_external_memory(cam_fd, self.cam_bytes)
-                    self.ext_mem_color = self.cuda_api.import_external_memory(color_fd, self.color_readback_bytes)
+                    
+                    # Optional: Test semaphore functionality immediately
+                    if os.environ.get('VK2TORCH_TEST_SEMAPHORE', '0') == '1':
+                        self._test_semaphore_sync()
+                    
+                    # Use the dedicated flags from handshake
+                    self.ext_mem_cam = self.cuda_api.import_external_memory(cam_fd, self.cam_bytes, dedicated=self.cam_dedicated)
+                    self.ext_mem_color = self.cuda_api.import_external_memory(color_fd, self.color_readback_bytes, dedicated=self.color_dedicated)
                     
                     
                     
 
                     # Now import external memory
-                    self.dev_color = self.cuda_api.get_mapped_buffer(self.ext_mem_color, self.color_readback_bytes,"color")
+                    self.dev_color = self.cuda_api.get_mapped_buffer(self.ext_mem_color, self.color_readback_bytes, "color", self.color_dedicated)
 
-                    self.dev_cam = self.cuda_api.get_mapped_buffer(self.ext_mem_cam, self.cam_bytes,"cam")
+                    self.dev_cam = self.cuda_api.get_mapped_buffer(self.ext_mem_cam, self.cam_bytes, "cam", self.cam_dedicated)
                     
                     
 
@@ -751,6 +823,69 @@ class VK2TorchClient:
             logger.error(f"Failed to save PNG: {e}")
             return False
             
+    def _test_semaphore_sync(self):
+        """Test semaphore synchronization immediately after import."""
+        logger.info("=== SEMAPHORE SYNC TEST ===")
+        try:
+            # Signal camera semaphore with value 42
+            test_value = 42
+            logger.info(f"Signaling camera semaphore with value {test_value}...")
+            self.cuda_api.signal_semaphore(self.sem_cam, test_value)
+            logger.info("✓ Signal sent successfully")
+            
+            # Wait for the same value on done semaphore (Vulkan should echo it back)
+            logger.info(f"Waiting for done semaphore value {test_value}...")
+            start_time = time.time()
+            self.cuda_api.wait_semaphore(self.sem_done, test_value)
+            self.cuda_api.synchronize_stream()
+            wait_time = (time.time() - start_time) * 1000
+            
+            logger.info(f"✓ Semaphore wait completed in {wait_time:.1f}ms")
+            logger.info("✓ SEMAPHORE SYNC TEST PASSED!")
+            
+            # Reset frame counter since we used value 42
+            self.frame_number = 43
+            
+        except Exception as e:
+            logger.error(f"✗ Semaphore test failed: {e}")
+            logger.warning("Continuing without semaphore sync...")
+    
+    def test_semaphore_ping_pong(self, iterations: int = 5) -> bool:
+        """Test semaphore ping-pong between CUDA and Vulkan.
+        
+        This sends incrementing values and expects them echoed back.
+        """
+        if not self.connected or not self.cuda_api:
+            logger.error("Not connected or CUDA not available")
+            return False
+        
+        logger.info(f"=== SEMAPHORE PING-PONG TEST ({iterations} iterations) ===")
+        
+        try:
+            for i in range(iterations):
+                test_value = 100 + i
+                
+                # Signal camera semaphore
+                logger.info(f"  [{i+1}/{iterations}] Signaling value {test_value}...")
+                self.cuda_api.signal_semaphore(self.sem_cam, test_value)
+                
+                # Wait for response on done semaphore
+                start_time = time.time()
+                self.cuda_api.wait_semaphore(self.sem_done, test_value)
+                self.cuda_api.synchronize_stream()
+                latency = (time.time() - start_time) * 1000
+                
+                logger.info(f"  [{i+1}/{iterations}] ✓ Received echo in {latency:.1f}ms")
+                
+                time.sleep(0.01)  # Small delay between iterations
+            
+            logger.info("✓ ALL PING-PONG TESTS PASSED!")
+            return True
+            
+        except Exception as e:
+            logger.error(f"✗ Ping-pong test failed: {e}")
+            return False
+    
     def disconnect(self):
         """Disconnect from Vulkan application."""
         if self.socket:
