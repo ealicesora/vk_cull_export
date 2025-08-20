@@ -245,7 +245,7 @@ class CUDADriverAPI:
         self.stream = stream
         logger.info("CUDA stream created")
         
-    def import_external_memory(self, fd: int, size: int) -> ctypes.c_void_p:
+    def import_external_memory(self, fd: int, size: int, is_dedicated: bool = False) -> ctypes.c_void_p:
         """Import external memory from file descriptor."""
         # Define CUDA_EXTERNAL_MEMORY_HANDLE_DESC structure
         class CUDA_EXTERNAL_MEMORY_HANDLE_DESC(ctypes.Structure):
@@ -269,7 +269,8 @@ class CUDADriverAPI:
         desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD
         desc.handle.fd = fd
         desc.size = size
-        desc.flags = 0#0x01  # CUDA_EXTERNAL_MEMORY_DEDICATED
+        # Use dedicated flag if specified
+        desc.flags = 0x01 if is_dedicated else 0x00  # CUDA_EXTERNAL_MEMORY_DEDICATED or not
         
         # Import external memory
         ext_mem = ctypes.c_void_p()
@@ -449,6 +450,8 @@ class VK2TorchClient:
         self.row_pitch = 0
         self.cam_bytes = 0
         self.vk_uuid = None
+        self.cam_dedicated = False
+        self.color_dedicated = False
         
         # CUDA resources
         self.cuda_api = None
@@ -518,11 +521,14 @@ class VK2TorchClient:
             self.row_pitch = handshake['row_pitch']
             self.cam_bytes = handshake['cam_bytes']
             self.vk_uuid = handshake.get('vk_uuid', None)
+            self.cam_dedicated = handshake.get('cam_dedicated', False)
+            self.color_dedicated = handshake.get('color_dedicated', False)
             
             logger.info(f"Handshake: {self.width}x{self.height} {self.format}, "
                        f"color={self.color_readback_bytes} bytes, cam={self.cam_bytes} bytes")
             if self.vk_uuid:
                 logger.info(f"Vulkan GPU UUID: {self.vk_uuid}")
+            logger.info(f"Dedicated allocation: cam={self.cam_dedicated}, color={self.color_dedicated}")
             
             # Receive file descriptors
             if not self._receive_fds():
@@ -578,18 +584,15 @@ class VK2TorchClient:
                         logger.warning("No UUID from Vulkan, using default device 0")
                         self.cuda_api.create_context_on_device(0)
 
-                    print('sem_import ok')
-                    self.ext_mem_color = self.cuda_api.import_external_memory_f(color_fd, self.color_readback_bytes)
-                    self.ext_mem_cam = self.cuda_api.import_external_memory_f(cam_fd, self.cam_bytes)
+                    # Now import external memory with dedicated flags
+                    self.ext_mem_cam = self.cuda_api.import_external_memory(cam_fd, self.cam_bytes, self.cam_dedicated)
+                    self.ext_mem_color = self.cuda_api.import_external_memory(color_fd, self.color_readback_bytes, self.color_dedicated)
                     
-                    
-
-                    # Now import external memory
-                    self.sem_cam = self.cuda_api.import_external_semaphore(cam_sem_fd)
-                    self.sem_done = self.cuda_api.import_external_semaphore(done_sem_fd)
-
                     self.dev_cam = self.cuda_api.get_mapped_buffer(self.ext_mem_cam, self.cam_bytes)
                     self.dev_color = self.cuda_api.get_mapped_buffer(self.ext_mem_color, self.color_readback_bytes)
+                    
+                    self.sem_cam = self.cuda_api.import_external_semaphore(cam_sem_fd)
+                    self.sem_done = self.cuda_api.import_external_semaphore(done_sem_fd)
                     
 
                     logger.info("CUDA external resources imported successfully")

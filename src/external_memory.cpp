@@ -70,27 +70,37 @@ bool ExternalMemoryManager::init(VkDevice device, VkPhysicalDevice physicalDevic
 
   // Create exportable buffers and semaphores
   VkDeviceSize cameraBufferSize = FRAME_CONSTANTS_SIZE;
+  
+  // Align camera buffer to at least 4096 bytes to satisfy common OpaqueFd import constraints
+  // This avoids "small block OPAQUE_FD non-Dedicated import error 1" issues
+  auto align_up = [](VkDeviceSize v, VkDeviceSize a){ return (v + a - 1) & ~(a - 1); };
+  cameraBufferSize = align_up(cameraBufferSize, 4096);
+  
   VkDeviceSize colorBufferSize = m_config.width * m_config.height * 4; // R8G8B8A8_UNORM
 
   LOGI("Creating camera buffer (size: %zu bytes)\n", cameraBufferSize);
   int cameraFd = -1;
   if (!createExportableBuffer(cameraBufferSize, 
                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                              &m_cameraBuffer, &m_cameraMemory, &cameraFd, &m_cameraBufferSize)) {
+                              &m_cameraBuffer, &m_cameraMemory, &cameraFd, 
+                              &m_cameraBufferSize, &m_cameraBufferDedicated)) {
     LOGE("Failed to create camera buffer\n");
     return false;
   }
-  LOGI("  Actual allocated size: %zu bytes\n", m_cameraBufferSize);
+  LOGI("  Actual allocated size: %zu bytes (dedicated: %s)\n", 
+       m_cameraBufferSize, m_cameraBufferDedicated ? "yes" : "no");
 
   LOGI("Creating color readback buffer (size: %zu bytes)\n", colorBufferSize);
   int colorFd = -1;
   if (!createExportableBuffer(colorBufferSize,
                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                              &m_colorReadbackBuffer, &m_colorReadbackMemory, &colorFd, &m_colorBufferSize)) {
+                              &m_colorReadbackBuffer, &m_colorReadbackMemory, &colorFd, 
+                              &m_colorBufferSize, &m_colorBufferDedicated)) {
     LOGE("Failed to create color readback buffer\n");
     return false;
   }
-  LOGI("  Actual allocated size: %zu bytes\n", m_colorBufferSize);
+  LOGI("  Actual allocated size: %zu bytes (dedicated: %s)\n", 
+       m_colorBufferSize, m_colorBufferDedicated ? "yes" : "no");
 
   LOGI("Creating timeline semaphores\n");
   int camSemFd = -1, doneSemFd = -1;
@@ -158,7 +168,8 @@ void ExternalMemoryManager::deinit() {
 }
 
 bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
-                                                   VkBuffer* buffer, VkDeviceMemory* memory, int* fd, VkDeviceSize* actualSize) {
+                                                   VkBuffer* buffer, VkDeviceMemory* memory, int* fd, 
+                                                   VkDeviceSize* actualSize, bool* isDedicated) {
 #ifdef _WIN32
   LOGE("External memory not supported on Windows\n");
   return false;
@@ -206,6 +217,19 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
   }
 
   LOGI("External buffer export check passed (features: 0x%X)\n", ebp.externalMemoryProperties.externalMemoryFeatures);
+  
+  // Check if dedicated allocation is required
+  const auto feats = ebp.externalMemoryProperties.externalMemoryFeatures;
+  const bool needsDedicated = (feats & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT) != 0;
+  
+  if (needsDedicated) {
+    LOGI("Dedicated allocation required for this buffer\n");
+  }
+  
+  // Return dedicated flag if requested
+  if (isDedicated) {
+    *isDedicated = needsDedicated;
+  }
 
   // Return actual allocated size if requested
   if (actualSize) {
@@ -215,10 +239,24 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
   // Allocate device-local memory with export capability
   VkExportMemoryAllocateInfo exportAlloc{VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO};
   exportAlloc.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+  exportAlloc.pNext = nullptr;
 
   VkMemoryAllocateInfo allocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-  allocInfo.pNext = &exportAlloc;
   allocInfo.allocationSize = memReq.size;
+  
+  // Setup dedicated allocation if needed
+  VkMemoryDedicatedAllocateInfo dedicated{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
+  if (needsDedicated) {
+    dedicated.buffer = *buffer;
+    dedicated.image = VK_NULL_HANDLE;
+    dedicated.pNext = nullptr;
+    
+    // Chain: allocInfo -> exportAlloc -> dedicated
+    exportAlloc.pNext = &dedicated;
+    allocInfo.pNext = &exportAlloc;
+  } else {
+    allocInfo.pNext = &exportAlloc;
+  }
   
   // Use the enhanced memory type finder that considers export capability
   uint32_t memTypeIndex = findMemoryTypeWithExport(memReq.memoryTypeBits, 
@@ -435,6 +473,8 @@ bool ExternalMemoryManager::sendHandshakeInfo() {
        << "\"color_readback_bytes\":" << m_colorBufferSize << ","
        << "\"row_pitch\":" << (m_config.width * 4) << ","
        << "\"cam_bytes\":" << m_cameraBufferSize << ","
+       << "\"cam_dedicated\":" << (m_cameraBufferDedicated ? "true" : "false") << ","
+       << "\"color_dedicated\":" << (m_colorBufferDedicated ? "true" : "false") << ","
        << "\"vk_uuid\":\"" << uuidHex.str() << "\","
        << "\"sem_init\":{\"cam\":0,\"done\":0}"
        << "}";
