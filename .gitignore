@@ -32,6 +32,11 @@ _downloaded_resources/
 *.nvsngeo
 *.cache
 
+*.ply
+*.glb
+
+*.gltf
+
 # Log files
 *.log
 output.log
