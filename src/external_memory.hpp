@@ -68,6 +68,10 @@ public:
   bool acceptClient();
   bool sendHandshakeInfo();
   bool sendFds(const std::vector<int>& fds);
+  
+  // Socket-based camera control
+  bool sendReadyMessage();
+  bool receiveCameraMatrices(float* viewMatrix, float* projMatrix);
 
   // Frame synchronization
   bool waitForCameraReady(uint64_t frameNumber);

@@ -466,6 +466,14 @@ bool ExternalMemoryManager::acceptClient() {
   LOGI("Now calling sendHandshakeInfo...\n");
   bool result = sendHandshakeInfo();
   LOGI("sendHandshakeInfo returned %s\n", result ? "true" : "false");
+  
+  if (result) {
+    LOGI("Now sending ready message to Python...\n");
+    bool readyResult = sendReadyMessage();
+    LOGI("sendReadyMessage returned %s\n", readyResult ? "true" : "false");
+    return readyResult;
+  }
+  
   return result;
 #endif
 }
@@ -615,6 +623,128 @@ bool ExternalMemoryManager::sendFds(const std::vector<int>& fds) {
   }
 
   LOGI("Successfully sent %zd bytes with FDs\n", sent);
+  return true;
+#endif
+}
+
+bool ExternalMemoryManager::sendReadyMessage() {
+#ifdef _WIN32
+  return false;
+#else
+  if (m_clientSocket < 0) {
+    LOGE("Client socket not connected\n");
+    return false;
+  }
+
+  // Create ready message JSON
+  std::ostringstream json;
+  json << "{"
+       << "\"type\":\"ready_to_render\","
+       << "\"frame\":0,"
+       << "\"width\":" << m_config.width << ","
+       << "\"height\":" << m_config.height
+       << "}";
+
+  std::string jsonStr = json.str();
+  
+  // Send JSON size first (4 bytes)
+  uint32_t jsonSize = jsonStr.size();
+  if (send(m_clientSocket, &jsonSize, sizeof(jsonSize), 0) != sizeof(jsonSize)) {
+    LOGE("Failed to send ready message size\n");
+    return false;
+  }
+  
+  // Send JSON data
+  if (send(m_clientSocket, jsonStr.c_str(), jsonSize, 0) != (ssize_t)jsonSize) {
+    LOGE("Failed to send ready message data\n");
+    return false;
+  }
+
+  LOGI("Sent ready message to Python: %s\n", jsonStr.c_str());
+  return true;
+#endif
+}
+
+bool ExternalMemoryManager::receiveCameraMatrices(float* viewMatrix, float* projMatrix) {
+#ifdef _WIN32
+  return false;
+#else
+  if (m_clientSocket < 0) {
+    LOGE("Client socket not connected\n");
+    return false;
+  }
+
+  // Read JSON size first (4 bytes)
+  uint32_t jsonSize = 0;
+  ssize_t received = recv(m_clientSocket, &jsonSize, sizeof(jsonSize), 0);
+  if (received != sizeof(jsonSize)) {
+    if (received == 0) {
+      LOGI("Client disconnected while reading camera message size\n");
+    } else if (received < 0) {
+      LOGE("Error reading camera message size: %s\n", strerror(errno));
+    } else {
+      LOGE("Partial read of camera message size: %zd bytes\n", received);
+    }
+    return false;
+  }
+
+  if (jsonSize > 4096) {  // Sanity check
+    LOGE("Camera message too large: %u bytes\n", jsonSize);
+    return false;
+  }
+
+  // Read JSON data
+  std::vector<char> buffer(jsonSize + 1);  // +1 for null terminator
+  received = recv(m_clientSocket, buffer.data(), jsonSize, 0);
+  if (received != (ssize_t)jsonSize) {
+    LOGE("Failed to read camera message data: expected %u, got %zd\n", jsonSize, received);
+    return false;
+  }
+  
+  buffer[jsonSize] = '\0';  // Null terminate
+  std::string jsonStr(buffer.data());
+  
+  LOGI("Received camera message: %s\n", jsonStr.c_str());
+
+  // Simple JSON parsing for camera matrices
+  // Expected format: {"type":"camera","view":[16 floats],"proj":[16 floats]}
+  size_t viewPos = jsonStr.find("\"view\":[");
+  size_t projPos = jsonStr.find("\"proj\":[");
+  
+  if (viewPos == std::string::npos || projPos == std::string::npos) {
+    LOGE("Invalid camera message format: missing view or proj arrays\n");
+    return false;
+  }
+
+  // Parse view matrix
+  viewPos += 8;  // Skip "view":["
+  for (int i = 0; i < 16; i++) {
+    size_t nextComma = jsonStr.find_first_of(",]", viewPos);
+    if (nextComma == std::string::npos) {
+      LOGE("Failed to parse view matrix element %d\n", i);
+      return false;
+    }
+    
+    std::string valueStr = jsonStr.substr(viewPos, nextComma - viewPos);
+    viewMatrix[i] = std::stof(valueStr);
+    viewPos = nextComma + 1;
+  }
+
+  // Parse projection matrix
+  projPos += 8;  // Skip "proj":["
+  for (int i = 0; i < 16; i++) {
+    size_t nextComma = jsonStr.find_first_of(",]", projPos);
+    if (nextComma == std::string::npos) {
+      LOGE("Failed to parse projection matrix element %d\n", i);
+      return false;
+    }
+    
+    std::string valueStr = jsonStr.substr(projPos, nextComma - projPos);
+    projMatrix[i] = std::stof(valueStr);
+    projPos = nextComma + 1;
+  }
+
+  LOGI("Successfully parsed camera matrices from Python\n");
   return true;
 #endif
 }

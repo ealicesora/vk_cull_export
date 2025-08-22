@@ -533,6 +533,10 @@ class VK2TorchClient:
             # Perform handshake
             if not self._handshake():
                 return False
+            
+            # Wait for ready message from Vulkan
+            if not self._wait_for_ready():
+                return False
                 
             self.connected = True
             return True
@@ -682,42 +686,68 @@ class VK2TorchClient:
         except Exception as e:
             logger.error(f"Failed to receive FDs: {e}")
             return False
+    
+    def _wait_for_ready(self) -> bool:
+        """Wait for ready message from Vulkan."""
+        try:
+            # Receive JSON header size
+            json_size_data = self.socket.recv(4)
+            if len(json_size_data) != 4:
+                logger.error("Failed to receive ready message size")
+                return False
+                
+            json_size = struct.unpack('I', json_size_data)[0]
+            logger.info(f"Expecting ready message of size {json_size}")
+            
+            # Receive JSON data
+            json_data = self.socket.recv(json_size)
+            if len(json_data) != json_size:
+                logger.error("Failed to receive complete ready message")
+                return False
+                
+            # Parse ready message
+            ready_msg = json.loads(json_data.decode())
+            if ready_msg.get('type') != 'ready_to_render':
+                logger.error(f"Expected ready_to_render message, got: {ready_msg}")
+                return False
+            
+            logger.info(f"✅ Received ready message from Vulkan: frame={ready_msg.get('frame', 0)}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to wait for ready message: {e}")
+            return False
             
     def update_camera(self, view_matrix: np.ndarray, proj_matrix: np.ndarray) -> bool:
-        """Update camera parameters."""
-        if not self.connected or not self.cuda_api:
+        """Update camera parameters via socket."""
+        if not self.connected:
             return False
             
         try:
-            # Create camera structure
-            frame_constants = FrameConstants()
+            # First signal camera ready semaphore
+            if self.cuda_api:
+                self.cuda_api.signal_semaphore(self.sem_cam, self.frame_number)
             
-            # Set viewport
-            frame_constants.viewport[0] = self.width
-            frame_constants.viewport[1] = self.height
-            frame_constants.viewportf[0] = float(self.width)
-            frame_constants.viewportf[1] = float(self.height)
+            # Send camera matrices via socket as JSON
+            camera_msg = {
+                "type": "camera",
+                "frame": self.frame_number,
+                "view": view_matrix.flatten().tolist(),
+                "proj": proj_matrix.flatten().tolist()
+            }
             
-            # Set view matrix (column-major)
-            for i in range(16):
-                frame_constants.viewMatrix[i] = view_matrix.flatten()[i]
-                frame_constants.projMatrix[i] = proj_matrix.flatten()[i]
-                
-            # Compute view-projection matrix
-            view_proj = proj_matrix @ view_matrix
-            for i in range(16):
-                frame_constants.viewProjMatrix[i] = view_proj.flatten()[i]
+            json_str = json.dumps(camera_msg)
+            json_bytes = json_str.encode('utf-8')
             
-            # Copy to device
-            self.cuda_api.memcpy_host_to_device(
-                self.dev_cam, 
-                ctypes.byref(frame_constants), 
-                ctypes.sizeof(frame_constants)
-            )
+            # Send JSON size first (4 bytes)
+            json_size = len(json_bytes)
+            size_bytes = struct.pack('I', json_size)
+            self.socket.send(size_bytes)
             
-            # Signal camera ready
-            self.cuda_api.signal_semaphore(self.sem_cam, self.frame_number)
+            # Send JSON data
+            self.socket.send(json_bytes)
             
+            logger.info(f"Sent camera matrices for frame {self.frame_number} via socket")
             return True
             
         except Exception as e:

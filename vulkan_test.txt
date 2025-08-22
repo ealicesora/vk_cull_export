@@ -1,10 +1,10 @@
 Enabling external memory extensions for Python integration
 Creating Vulkan Context
-| createInstance -> 35.449 ms
+| createInstance -> 37.629 ms
 Extension not available: VK_KHR_ray_tracing_position_fetch 
 Extension not available: VK_KHR_ray_query 
 Extension not available: VK_NV_cluster_acceleration_structure  (v.0 >= 2)
-|-> 286.518 ms
+|-> 221.688 ms
 Initializing external memory manager for Python integration
 [INFO] Initializing External Memory Manager with UDS: /tmp/vk2torch.sock
 [INFO] Creating camera buffer (size: 4096 bytes)
@@ -31,19 +31,19 @@ Adding Default Menu
 Adding DefaultWindowTitle
 Adding Logger UI
 WARNING: Cluster raytracing extension not supported
-framebuffer: 256 x 256
+framebuffer: 128 x 128
 Loading scene /home/gongyuning/Desktop/vk_cull/vk_lod_clusters/_bin/Release/../../_downloaded_resources/matrix_city_new.glb
 ... geometry load & processing: geometries 1, threads outer 1 inner 8
   Processing geometry 1/1 (new)
     Processing mesh: 4262103 triangles, 2171695 vertices -> meshoptimizer clustering...
-    Mesh clustering completed: 7.13 seconds
-    Generated 83114 clusters, 16 LOD levels
+    Mesh clustering completed: 7.37 seconds
+    Generated 83198 clusters, 16 LOD levels
     Building cluster strips...
     Building cluster vertices...
     Building bounding boxes...
 ... geometry load & processing: 100%
-... geometry load & processing: 7665.985778 milliseconds
-Average triangles per strip 18.39
+... geometry load & processing: 7963.598989 milliseconds
+Average triangles per strip 18.38
 Scene::saveCache saved /home/gongyuning/Desktop/vk_cull/vk_lod_clusters/_bin/Release/../../_downloaded_resources/matrix_city_new.glb.nvsngeo
 operations memory: 123 KB - stream requests
 operations memory: 18.9 MB - stream resident
@@ -60,10 +60,9 @@ operations memory: 67.1 MB - build data
 operations memory: 33.6 MB - build traversal
 Adding Camera Manipulator
 Running application
-framebuffer: 4096 x 2304
+headlessRunframebuffer: 1920 x 1080
 onRender called (count: 0)
 onRender called (count: 1)
-framebuffer: 3068 x 1452
 onRender called (count: 2)
 onRender called (count: 3)
 onRender called (count: 4)
@@ -92,11 +91,98 @@ onRender called (count: 1700)
 onRender called (count: 1800)
 onRender called (count: 1900)
 onRender called (count: 2000)
-[INFO] Python client connected
+onRender called (count: 2100)
+onRender called (count: 2200)
+onRender called (count: 2300)
+onRender called (count: 2400)
+onRender called (count: 2500)
+onRender called (count: 2600)
+onRender called (count: 2700)
+onRender called (count: 2800)
+onRender called (count: 2900)
+onRender called (count: 3000)
+onRender called (count: 3100)
+onRender called (count: 3200)
+onRender called (count: 3300)
+onRender called (count: 3400)
+onRender called (count: 3500)
+onRender called (count: 3600)
+onRender called (count: 3700)
+onRender called (count: 3800)
+onRender called (count: 3900)
+onRender called (count: 4000)
+onRender called (count: 4100)
+onRender called (count: 4200)
+onRender called (count: 4300)
+onRender called (count: 4400)
+onRender called (count: 4500)
+onRender called (count: 4600)
+onRender called (count: 4700)
+onRender called (count: 4800)
+onRender called (count: 4900)
+onRender called (count: 5000)
+onRender called (count: 5100)
+onRender called (count: 5200)
+onRender called (count: 5300)
+onRender called (count: 5400)
+onRender called (count: 5500)
+onRender called (count: 5600)
+onRender called (count: 5700)
+onRender called (count: 5800)
+onRender called (count: 5900)
+onRender called (count: 6000)
+onRender called (count: 6100)
+onRender called (count: 6200)
+onRender called (count: 6300)
+onRender called (count: 6400)
+onRender called (count: 6500)
+onRender called (count: 6600)
+onRender called (count: 6700)
+onRender called (count: 6800)
+onRender called (count: 6900)
+onRender called (count: 7000)
+onRender called (count: 7100)
+onRender called (count: 7200)
+onRender called (count: 7300)
+onRender called (count: 7400)
+onRender called (count: 7500)
+onRender called (count: 7600)
+onRender called (count: 7700)
+onRender called (count: 7800)
+onRender called (count: 7900)
+onRender called (count: 8000)
+onRender called (count: 8100)
+onRender called (count: 8200)
+onRender called (count: 8300)
+onRender called (count: 8400)
+onRender called (count: 8500)
+onRender called (count: 8600)
+onRender called (count: 8700)
+onRender called (count: 8800)
+onRender called (count: 8900)
+onRender called (count: 9000)
+onRender called (count: 9100)
+onRender called (count: 9200)
+onRender called (count: 9300)
+onRender called (count: 9400)
+onRender called (count: 9500)
+onRender called (count: 9600)
+onRender called (count: 9700)
+onRender called (count: 9800)
+onRender called (count: 9900)
+onRender called (count: 10000)
+onRender called (count: 10100)
+onRender called (count: 10200)
+onRender called (count: 10300)
+onRender called (count: 10400)
+onRender called (count: 10500)
+onRender called (count: 10600)
+[INFO] Python client connected in ExternalMemoryManager::acceptClient
+[INFO] Now calling sendHandshakeInfo...
 [INFO] Vulkan device UUID: 3d4aa2ab8bf3f2d5ba4e606742f50c10
 === VULKAN SIDE: Exporting FDs ===
-  Camera Memory FD:    70
-  Color Memory FD:     71
-  Camera Semaphore FD: 72
-  Done Semaphore FD:   73
+  Camera Memory FD:    54
+  Color Memory FD:     55
+  Camera Semaphore FD: 56
+  Done Semaphore FD:   57
 ===================================

@@ -59,7 +59,7 @@ int main(int argc, char** argv)
 
   appInfo.windowSize = {1920,1080};
   appInfo.headless = true;
-  appInfo.headlessFrameCount = 1000;
+  appInfo.headlessFrameCount = 100000;  // Increased for testing socket communication
 
   VkPhysicalDeviceMeshShaderFeaturesNV meshNV = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_NV};
   VkPhysicalDeviceAccelerationStructureFeaturesKHR accKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
@@ -323,30 +323,38 @@ int main(int argc, char** argv)
       vkContext.deinit();
       return 0;
     } else {
-      // GUI mode with UDS support
-      LOGI("GUI mode with UDS enabled - Python client can connect at any time\n");
-      
-
-      // Create a thread to handle Python client connection
-      std::thread clientThread([&externalMemoryManager, &sampleElement]() {
-        LOGI("Waiting for Python client connection in background...\n");
-        if (externalMemoryManager->acceptClient()) {
-          LOGI("Python client connected in GUI mode!\n");
-          // Pass the external memory manager to the sample element
-          sampleElement->setExternalMemoryManager(externalMemoryManager.get());
-          
-          // Monitor connection in background
-          while (externalMemoryManager->isConnected()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-          }
-          LOGI("Python client disconnected in GUI mode\n");
-        } else {
-          LOGI("Failed to accept Python client in GUI mode\n");
+      // For headless mode, we need to wait for connection before starting render
+      if (appInfo.headless && enableUDS) {
+        LOGI("Headless mode with UDS - blocking until Python connects...\n");
+        if (!externalMemoryManager->acceptClient()) {
+          LOGE("Failed to accept Python client in headless mode\n");
+          return -1;
         }
-      });
-      clientThread.detach(); // Let it run in background
-
-      
+        LOGI("Python client connected! Starting headless rendering...\n");
+        sampleElement->setExternalMemoryManager(externalMemoryManager.get());
+      } else {
+        // GUI mode with UDS support - connection can happen anytime
+        LOGI("GUI mode with UDS enabled - Python client can connect at any time\n");
+        
+        // Create a thread to handle Python client connection
+        std::thread clientThread([&externalMemoryManager, &sampleElement]() {
+          LOGI("Waiting for Python client connection in background...\n");
+          if (externalMemoryManager->acceptClient()) {
+            LOGI("Python client connected in GUI mode!\n");
+            // Pass the external memory manager to the sample element
+            sampleElement->setExternalMemoryManager(externalMemoryManager.get());
+            
+            // Monitor connection in background
+            while (externalMemoryManager->isConnected()) {
+              std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+            LOGI("Python client disconnected in GUI mode\n");
+          } else {
+            LOGI("Failed to accept Python client in GUI mode\n");
+          }
+        });
+        clientThread.detach(); // Let it run in background
+      }
     }
 
 

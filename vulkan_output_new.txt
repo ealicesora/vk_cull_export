@@ -1,0 +1,37 @@
+Enabling external memory extensions for Python integration
+Creating Vulkan Context
+| createInstance -> 38.048 ms
+Extension not available: VK_KHR_ray_tracing_position_fetch 
+Extension not available: VK_KHR_ray_query 
+Extension not available: VK_NV_cluster_acceleration_structure  (v.0 >= 2)
+|-> 238.311 ms
+Initializing external memory manager for Python integration
+[INFO] Initializing External Memory Manager with UDS: /tmp/vk2torch.sock
+[INFO] Creating camera buffer (size: 4096 bytes)
+[INFO] External buffer export check passed (features: 0x6)
+[INFO] Using dedicated allocation (required=no, forced=yes)
+[INFO] Applying VkMemoryDedicatedAllocateInfo to allocation
+[INFO] Found memory type 1 with properties 0x1 for external export
+[INFO] Using memory type index 1 for external buffer
+[INFO]   Actual allocated size: 4096 bytes (dedicated: yes)
+[INFO] Creating color readback buffer (size: 8294400 bytes)
+[INFO] External buffer export check passed (features: 0x6)
+[INFO] Using dedicated allocation (required=no, forced=yes)
+[INFO] Applying VkMemoryDedicatedAllocateInfo to allocation
+[INFO] Found memory type 1 with properties 0x1 for external export
+[INFO] Using memory type index 1 for external buffer
+[INFO]   Actual allocated size: 8294400 bytes (dedicated: yes)
+[INFO] Creating timeline semaphores
+[INFO] UDS server listening on /tmp/vk2torch.sock
+[INFO] External Memory Manager initialized successfully
+Headless mode with UDS - blocking until Python connects...
+[INFO] Waiting for Python client connection...
+[INFO] Python client connected in ExternalMemoryManager::acceptClient
+[INFO] Now calling sendHandshakeInfo...
+[INFO] Vulkan device UUID: 3d4aa2ab8bf3f2d5ba4e606742f50c10
+=== VULKAN SIDE: Exporting FDs ===
+  Camera Memory FD:    45
+  Color Memory FD:     47
+  Camera Semaphore FD: 50
+  Done Semaphore FD:   51
+===================================

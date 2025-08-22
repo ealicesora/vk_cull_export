@@ -307,8 +307,8 @@ The codebase includes a **production-ready** Python integration system that enab
 ### Production Testing Commands
 ```bash
 # Method 1: Complete integration test
-# Terminal 1: Start Vulkan app
-./_bin/Release/vk_lod_clusters --uds /tmp/vk2torch.sock --offscreen 1 --renderer 0 --validation 0 --gridcopies 1
+# Terminal 1: Start Vulkan app (window mode recommended for stability)
+./_bin/Release/vk_lod_clusters --uds /tmp/vk2torch.sock --renderer 0 --validation 0 --gridcopies 1
 
 # Terminal 2: Run strict client test
 conda activate vk2torch
@@ -330,8 +330,25 @@ with vk2torch_client_strict_fixed.VK2TorchClientStrictFixed('/tmp/vk2torch.sock'
         print('🎉 COMPLETE SUCCESS!')
 "
 
-# Method 2: Automated test script
-python test_final_success.py
+# Method 2: Automated test script (in python/ directory)
+cd python && python test_final_success.py
+
+# Method 3: Quick shell-based test
+./test_vk2torch.sh
+
+# Method 4: Multiple frame test with window mode
+# Terminal 1: Start with window mode (more stable than offscreen)
+./_bin/Release/vk_lod_clusters --uds /tmp/vk2torch.sock --renderer 0 --validation 0 --gridcopies 1
+
+# Terminal 2: Test multiple frames
+cd python && python -c "
+import vk2torch_client
+client = vk2torch_client.VK2TorchClient('/tmp/vk2torch.sock')
+if client.connect():
+    print('Connected successfully')
+    for i in range(3):
+        frame = client.get_frame(timeout_ms=2000)
+        print(f'Frame {i+1}: {frame.shape if frame is not None else \"timeout\"}')"
 ```
 
 ### Python Environment Setup
@@ -401,11 +418,14 @@ The Python integration implements a **zero-copy GPU-to-GPU pipeline**:
 - **Linux only**: Uses Unix domain sockets - no Windows support currently
 
 ### Troubleshooting Python Integration
-- **"Connection refused"**: Ensure Vulkan app started with `--uds <path>` and `--offscreen 1`
+- **"Connection refused"**: Ensure Vulkan app started with `--uds <path>` (prefer window mode over `--offscreen 1`)
 - **"CUDA import failed"**: Check driver version and run `conda activate vk2torch`
 - **"File descriptor errors"**: Verify socket path is accessible and not in use
-- **"Semaphore timeout"**: Increase timeout or check GPU load
+- **"Semaphore timeout"**: Increase timeout or check GPU load - window mode is more stable than offscreen
 - **"Import error"**: Run `python -c "import cupy, torch"` to verify environment
+- **"Vulkan hangs after 2-3 frames"**: Known issue with timeline semaphore signaling, use window mode instead of offscreen
+- **"Device lost errors"**: Indicates duplicate timeline semaphore signaling - fixed in current implementation
+- **"NVIDIA Xid 39 errors"**: GPU errors from invalid commands - ensure not running old versions with duplicate signaling bug
 
 ## Development Workflow
 
@@ -453,3 +473,17 @@ python python/test_optimizations.py /tmp/debug.sock
 - **CUDA Structure Compliance**: Do not modify the CUDA ctypes structure definitions - they are carefully crafted to match CUDA Driver API v1 specifications
 - **Environment Requirement**: Always use `conda activate vk2torch` - this environment contains the required CuPy, PyTorch, and CUDA libraries
 - **Testing Strategy**: The comprehensive test suite in `test_final_success.py` validates the complete pipeline including semaphore synchronization, camera control, and zero-copy tensor access
+
+### Critical Timeline Semaphore Implementation (src/lodclusters.cpp:740)
+The timeline semaphore synchronization includes a critical fix to prevent GPU crashes:
+```cpp
+static uint64_t lastSignaledFrameNumber = 0;
+if(m_currentExternalFrameNumber > lastSignaledFrameNumber) {
+    // Safe to signal - prevents duplicate signaling that causes Xid 39 errors
+    lastSignaledFrameNumber = m_currentExternalFrameNumber;
+    m_app->addSignalSemaphore(frameDoneSubmit);
+}
+```
+**NEVER modify this duplicate signaling prevention** - it's essential for GPU stability.
+- remember to change constexpr int32_t numFramesInFlight = 1; in application.cpp, when re-pull the nvpro_core2 repo
+- ignore the offscreen mode in vk_cluser, use headless mode instead.
