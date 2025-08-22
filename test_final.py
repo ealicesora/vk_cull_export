@@ -17,6 +17,8 @@ from time import perf_counter
 import numpy as np
 
 
+import numpy as np
+
 def _frustum_offcenter_rh_zo(l, r, b, t, n, f):
     # 右手、深度 0..1（与 glm::perspectiveRH_ZO 一致）
     P = np.array([
@@ -27,67 +29,52 @@ def _frustum_offcenter_rh_zo(l, r, b, t, n, f):
     ], dtype=np.float32)
     return P
 
-def opencv_extrinsics_to_view_vulkan(R, t, *, is_world_to_cam=True, do_yz_flip=True):
-    """
-    R, t 来自 OpenCV/COLMAP。
-    - is_world_to_cam=True：R,t 满足 X_cam = R X_world + t（多数工具默认）
-      如果你手上是 c2w，请设为 False。
-    - do_yz_flip=True：OpenCV(x右,y下,z前) -> GL/Vulkan(x右,y上,z里)
-    返回：4x4 view（world->camera），适配 GL/Vulkan 相机系。
-    """
-    R = np.asarray(R, np.float32)
-    t = np.asarray(t, np.float32).reshape(3, 1)
-
-    if not is_world_to_cam:
-        # 输入是 c2w，先转 w2c
-        R_wc = R.T
-        t_wc = -R_wc @ t
-        R, t = R_wc, t_wc
-
-    if do_yz_flip:
-        S = np.diag([1.0, -1.0, -1.0]).astype(np.float32)  # y,z 取反
-        R = S @ R
-        t = S @ t
-
-    view = np.eye(4, dtype=np.float32)
-    view[:3, :3] = R
-    view[:3,  3] = t.ravel()
-    return view
-
-def opencv_intrinsics_to_proj_vulkan(fx, fy, cx, cy, W, H, znear, zfar, *, do_vulkan_y_flip=True):
-    """
-    用内参构造离轴透视投影（RH_ZO），并按需做 Vulkan 的 Y 翻转（== 只翻一次）。
-    这里假设像素原点在左上，OpenCV 的 (cx,cy) 也是以左上为原点。
-    """
-    # 近裁面上的 frustum 边界（已经在相机为 y↑、z 向里后成立）
+def proj_from_intrinsics_vulkan(fx, fy, cx, cy, W, H, znear, zfar, *, flip_y=True):
+    # 近裁面上的 frustum 边界（相机坐标系 y↑、z 向里前提下）
     l = -znear * (cx)      / fx
     r =  znear * (W - cx)  / fx
     t =  znear * (cy)      / fy
     b = -znear * (H - cy)  / fy
+    P = _frustum_offcenter_rh_zo(l, r, b, t, znear, zfar)
+    if flip_y:                      # ★ Vulkan 常用：在投影里翻一次 Y
+        P[1, :] *= -1.0
+    return P
 
-    proj = _frustum_offcenter_rh_zo(l, r, b, t, znear, zfar)
+def to_vulkan_viewproj_match_nvdiffrast(
+    R_ocv, T_ocv,           # 同一组输入 R,T（world->cam，OpenCV/Colmap 约定）
+    fx, fy, cx, cy, W, H, znear, zfar,
+    *,
+    nvdiffrast_world_is_z_up=True,   # 如果 nv 那边是 Z-up，而你的世界/Y-up，需要做基变换
+    your_world_is_y_up=False
+):
+    R_ocv = np.swapaxes(R_ocv, -1, -2)
+    R = np.asarray(R_ocv, np.float32)
+    t = np.asarray(T_ocv, np.float32).reshape(3,1)
 
-    # proj[0, :] *= -1.0 
+    # (可选) 基变换：把 Z-up 的世界坐标“翻译”为你这边的 Y-up
+    # A = Rx(+90°) : (x, y, z)_nv -> (x, z, -y)_your
+    # 对 world->cam：改变“世界基” => R' = R * A^{-1} = R * A^T
+    if nvdiffrast_world_is_z_up and your_world_is_y_up:
+        A = np.array([[1,0,0],
+                      [0,0,1],
+                      [0,-1,0]], dtype=np.float32)  # Rx(+90°)
+        R = R @ A.T
+        # t 不需要绕原点的基变换；如果你的世界原点与 nv 的不一致，再单独处理平移
 
-    if do_vulkan_y_flip:
-        # 等价于 C++ 里的 projection[1][1] *= -1；确保只做一次
-        proj[1, :] *= -1.0
-    return proj
+    # OpenCV/Colmap(x→,y↓,z→) -> GL/Vulkan 相机系(x→,y↑,z里)
+    S = np.diag([1.0, -1.0, -1.0]).astype(np.float32)
+    R_cam = S @ R
+    t_cam = S @ t
 
-def make_viewproj_from_opencv(R, T, fx, fy, cx, cy, W, H, znear=0.01, zfar=100.0,
-                              *, R_t_is_world_to_cam=True):
-    view = opencv_extrinsics_to_view_vulkan(
-        R, T, is_world_to_cam=R_t_is_world_to_cam, do_yz_flip=True
-    )
-    proj = opencv_intrinsics_to_proj_vulkan(
-        fx, fy, cx, cy, W, H, znear, zfar, do_vulkan_y_flip=False
-    )
+    view = np.eye(4, dtype=np.float32)
+    view[:3,:3] = R_cam
+    view[:3, 3] = t_cam.ravel()
 
-    # ！！！与 glm::mat4(...) 的列主序构造对齐：按“列优先”展平发送
-    view_flat = view.astype(np.float32).T.ravel()  # == Fortran 顺序
-    proj_flat = proj.astype(np.float32).T.ravel()
-    return view_flat, proj_flat
+    # 投影：为了与 nvdiffrast（OpenGL 栈）对齐且在 Vulkan 正显，翻一次 Y
+    proj = proj_from_intrinsics_vulkan(fx, fy, cx, cy, W, H, znear, zfar, flip_y=True)
 
+    # 以列主序展平给 Vulkan（和 glm::mat4(...) 构造一致）
+    return view.T.ravel(), proj.T.ravel()
 
 
 # Add Python client path
@@ -116,20 +103,13 @@ def test_system():
         t_all_start = perf_counter()
         frame = None
         
-        for i in range(0, 10):  # Reduced to 5 frames for quicker testing
-            # if (i ==1):
-            #     t_all_start = perf_counter()
-            # Create different camera positions for each frame
-            distance = 4.0 + i * 0.5  # Move camera further away each frame
-            yaw = i * 0.3  # Rotate around Y axis
-            pitch = 0.0
-            
-            # view, proj = create_camera_matrices(distance, yaw, pitch)
-      
-            # R = np.array([[ 0.98822485,  0.11374114, -0.10234546],
-            #             [-0.11979481,  0.99127023, -0.05506844],
-            #             [ 0.09518846,  0.06668046,  0.99322348]], dtype=np.float32)
-            # T = np.array([-2.80552141, -1.27673587,  5.06543639], dtype=np.float32)
+        for i in range(0, 10):  
+            distance = 4.0 + i * 0.5  
+
+            R = np.array([[ 0.98822485,  0.11374114, -0.10234546],
+                        [-0.11979481,  0.99127023, -0.05506844],
+                        [ 0.09518846,  0.06668046,  0.99322348]], dtype=np.float32)
+            T = np.array([-2.80552141, -1.27673587,  3.06543639], dtype=np.float32)
       
 
             Fx = 1208.1880959114053
@@ -141,26 +121,11 @@ def test_system():
             Cy = H / 2
             znear, zfar = 0.001, 1000.0
 
-            X = np.array([[1,0,0],
-                        [0,0,1],
-                        [0,1,0]], dtype=np.float32)
 
-            
-            # R = np.array([[ -1,  0, 0],
-            #             [0, 0, 1],
-            #             [ 0,  -1,  0]], dtype=np.float32)
-            
-            R = np.array([[ 1,  0, 0],
-                        [0, 1, 0],
-                        [ 0,  0, 1, ]], dtype=np.float32)
 
-            # R   = X @ R 
-            T = np.array([0,0,  10.], dtype=np.float32)
 
-            # R = R.transpose(-2,-1)
-            # 注意：COLMAP 的 (R, T) 通常是 world->cam
-            view_flat, proj_flat = make_viewproj_from_opencv(
-                R, T, Fx, Fy, Cx, Cy, W, H, znear, zfar, R_t_is_world_to_cam=True
+            view_flat, proj_flat = to_vulkan_viewproj_match_nvdiffrast(
+                R, T, Fx, Fy, Cx, Cy, W, H, znear, zfar
             )
 
             print(f"Frame {i}: update_camera (frame_number={client.frame_number}, distance={distance:.1f})")

@@ -462,7 +462,7 @@ void LodClusters::onAttach(nvapp::Application* app)
     };
 
     // m_sceneFilePath = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
-    m_sceneFilePath = nvutils::findFile("matrix_city_new.glb", defaultSearchPaths);
+    m_sceneFilePath = nvutils::findFile("house_new.glb", defaultSearchPaths);
     // enforce unique geometries in the sample scene
     m_sceneGridConfig.uniqueGeometriesForCopies = true;
 
@@ -725,37 +725,39 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 {
 
   bool verbose = true;
-  // If we have external memory manager and scene is initialized, wait for connection
-  if (m_frameConfig.externalMemoryManager && m_sceneInitialized && 
-      !m_frameConfig.externalMemoryManager->isConnected()) 
+  if(m_app->isHeadless())
   {
-    if (!m_waitingForConnection) {
-      if (verbose)
-      {
-        LOGI("Scene initialized - waiting for Python client connection...\n");
-        LOGI("Blocking until Python connects to start rendering...\n");
-      }
+    // If we have external memory manager and scene is initialized, wait for connection
+    if (m_frameConfig.externalMemoryManager && m_sceneInitialized && 
+        !m_frameConfig.externalMemoryManager->isConnected()) 
+    {
+      if (!m_waitingForConnection) {
+        if (verbose)
+        {
+          LOGI("Scene initialized - waiting for Python client connection...\n");
+          LOGI("Blocking until Python connects to start rendering...\n");
+        }
 
-      
-      // In headless mode, block synchronously
-      if (m_app->isHeadless()) {
-        if (m_frameConfig.externalMemoryManager->acceptClient()) {
-          LOGI("Python client connected! Starting rendering...\n");
+        
+        // In headless mode, block synchronously
+        if (m_app->isHeadless()) {
+          if (m_frameConfig.externalMemoryManager->acceptClient()) {
+            LOGI("Python client connected! Starting rendering...\n");
+          } else {
+            LOGE("Failed to accept Python client\n");
+            return;
+          }
         } else {
-          LOGE("Failed to accept Python client\n");
+          // In GUI mode, just return and wait
+          m_waitingForConnection = true;
           return;
         }
       } else {
-        // In GUI mode, just return and wait
-        m_waitingForConnection = true;
+        // Still waiting in GUI mode
         return;
       }
-    } else {
-      // Still waiting in GUI mode
-      return;
     }
-  }
-  
+   }
   // Reset waiting flag once connected
   if (m_waitingForConnection && m_frameConfig.externalMemoryManager && 
       m_frameConfig.externalMemoryManager->isConnected()) {
