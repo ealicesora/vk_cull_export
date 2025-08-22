@@ -459,6 +459,8 @@ void LodClusters::onAttach(nvapp::Application* app)
         std::filesystem::absolute(exeDirectoryPath / TARGET_EXE_TO_DOWNLOAD_DIRECTORY),
         // install build
         std::filesystem::absolute(exeDirectoryPath / "resources"),
+
+        //test
     };
 
     // m_sceneFilePath = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
