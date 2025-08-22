@@ -79,13 +79,13 @@ public:
     int          supersample = 2;
 
     bool facetShading = true;
-    bool useStreaming = true;
+    bool useStreaming = false;
 
     bool autoResetTimers = false;
     bool autoSharing     = true;
 
     bool  hbaoFullRes = false;
-    bool  hbaoActive  = true;
+    bool  hbaoActive  = false;
     float hbaoRadius  = 0.05f;
 
     float mirrorBoxScale  = 0.2f;
@@ -250,5 +250,9 @@ private:
   
   // External memory integration
   uint64_t m_currentExternalFrameNumber = 0;
+  
+  // Scene initialization tracking
+  bool m_sceneInitialized = false;
+  bool m_waitingForConnection = false;
 };
 }  // namespace lodclusters

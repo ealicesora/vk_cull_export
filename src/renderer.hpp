@@ -62,7 +62,7 @@ public:
 struct RendererConfig
 {
   bool flipWinding           = false;
-  bool twoSided              = false;
+  bool twoSided              = true;
   bool useSorting            = false;
   bool useRenderStats        = false;
   bool useCulling            = true;

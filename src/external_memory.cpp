@@ -674,80 +674,135 @@ bool ExternalMemoryManager::receiveCameraMatrices(float* viewMatrix, float* proj
     return false;
   }
 
-  // Read JSON size first (4 bytes)
-  uint32_t jsonSize = 0;
-  ssize_t received = recv(m_clientSocket, &jsonSize, sizeof(jsonSize), 0);
-  if (received != sizeof(jsonSize)) {
-    if (received == 0) {
-      LOGI("Client disconnected while reading camera message size\n");
-    } else if (received < 0) {
-      LOGE("Error reading camera message size: %s\n", strerror(errno));
-    } else {
-      LOGE("Partial read of camera message size: %zd bytes\n", received);
+  // ---------- 小工具：读满 n 字节 ----------
+  auto recv_all = [&](void* buf, size_t n) -> ssize_t {
+    uint8_t* p = static_cast<uint8_t*>(buf);
+    size_t got = 0;
+    while (got < n) {
+      ssize_t r = ::recv(m_clientSocket, p + got, n - got, 0);
+      if (r == 0) return (ssize_t)got;            // 对端关闭
+      if (r < 0) { if (errno == EINTR) continue; return r; }
+      got += (size_t)r;
     }
+    return (ssize_t)got;
+  };
+
+  // ---------- 1) 读长度前导（4B，小端） ----------
+  uint32_t payloadSizeLE = 0;
+  if (recv_all(&payloadSizeLE, sizeof(payloadSizeLE)) != (ssize_t)sizeof(payloadSizeLE)) {
+    LOGE("Failed to read camera payload size\n");
+    return false;
+  }
+  uint32_t payloadSize = payloadSizeLE; // x86 小端可直接用；异构平台再做字节序转换
+
+  // 合理上限（防止乱包）
+  if (payloadSize == 0 || payloadSize > (1u << 20)) {
+    LOGE("Camera payload size invalid: %u\n", payloadSize);
     return false;
   }
 
-  if (jsonSize > 4096) {  // Sanity check
-    LOGE("Camera message too large: %u bytes\n", jsonSize);
+  // ---------- 2) 读载荷 ----------
+  std::vector<uint8_t> buf(payloadSize);
+  if (recv_all(buf.data(), payloadSize) != (ssize_t)payloadSize) {
+    LOGE("Failed to read camera payload: expected %u\n", payloadSize);
     return false;
   }
+  //return false;
+  // ---------- 3) 分支：二进制 CAM1 优先 ----------
+  // CAM1 二进制布局（小端）:
+  //   magic[4] = "CAM1"
+  //   frame(u32)
+  //   view[16] float32
+  //   proj[16] float32
+  struct Cam1Layout {
+    char     magic[4];
+    uint32_t frame;
+    float    view[16];
+    float    proj[16];
+  };
+  constexpr size_t CAM1_SIZE = sizeof(Cam1Layout); // 136 字节
 
-  // Read JSON data
-  std::vector<char> buffer(jsonSize + 1);  // +1 for null terminator
-  received = recv(m_clientSocket, buffer.data(), jsonSize, 0);
-  if (received != (ssize_t)jsonSize) {
-    LOGE("Failed to read camera message data: expected %u, got %zd\n", jsonSize, received);
-    return false;
+  if (payloadSize >= 4 && std::memcmp(buf.data(), "CAM1", 4) == 0) {
+    if (payloadSize != CAM1_SIZE) {
+      LOGE("CAM1 binary size mismatch: got %u, expect %zu\n", payloadSize, CAM1_SIZE);
+      return false;
+    }
+    const Cam1Layout* pkt = reinterpret_cast<const Cam1Layout*>(buf.data());
+    std::memcpy(viewMatrix, pkt->view, sizeof(float) * 16);
+    std::memcpy(projMatrix, pkt->proj, sizeof(float) * 16);
+    // 如需用 frame 值：
+    // uint32_t frame = pkt->frame;
+
+    LOGI("Successfully received CAM1 binary camera matrices\n");
+    return true;
   }
-  
-  buffer[jsonSize] = '\0';  // Null terminate
-  std::string jsonStr(buffer.data());
-  
-  LOGI("Received camera message: %s\n", jsonStr.c_str());
 
-  // Simple JSON parsing for camera matrices
-  // Expected format: {"type":"camera","view":[16 floats],"proj":[16 floats]}
-  size_t viewPos = jsonStr.find("\"view\":[");
-  size_t projPos = jsonStr.find("\"proj\":[");
-  
+  // ---------- 4) 兼容旧 JSON（仅当不是 CAM1 时） ----------
+  // 注意：不要像你原代码那样额外做 viewPos += 8 之类硬编码偏移！
+  // 我们用更健壮的指针式解析（strtof），避免 stof 抛异常。
+  auto findArrayStart = [](const std::string& s, const char* key) -> size_t {
+    size_t keyPos = s.find(key);
+    if (keyPos == std::string::npos) return std::string::npos;
+    size_t colonPos = s.find(':', keyPos + std::strlen(key));
+    if (colonPos == std::string::npos) return std::string::npos;
+    size_t i = colonPos + 1;
+    while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
+    if (i >= s.size() || s[i] != '[') return std::string::npos;
+    return i + 1; // 指向 '[' 后的第一个字符
+  };
+
+  auto parse_float_array_16 = [](const std::string& s, size_t start_after_bracket,
+                                 float out[16], const char* tag) -> bool {
+    const char* p   = s.c_str() + start_after_bracket;  // 指向 '[' 后
+    const char* end = s.c_str() + s.size();
+    auto skip_ws = [&](const char*& q) { while (q < end && std::isspace((unsigned char)*q)) ++q; };
+
+    for (int i = 0; i < 16; ++i) {
+      skip_ws(p);
+      if (p >= end) { LOGE("%s: unexpected end before element %d\n", tag, i); return false; }
+      errno = 0;
+      char* next = nullptr;
+      float v = std::strtof(p, &next);
+      if (p == next) {
+        char buf[32] = {0}; std::snprintf(buf, sizeof(buf), "%.20s", p);
+        LOGE("%s: parse failed at elem %d near '%s'\n", tag, i, buf);
+        return false;
+      }
+      if (errno == ERANGE) { LOGE("%s: elem %d out of range\n", tag, i); return false; }
+      out[i] = v;
+      p = next; skip_ws(p);
+      if (i < 15) {
+        if (p >= end || *p != ',') { LOGE("%s: expected ',' after elem %d\n", tag, i); return false; }
+        ++p;
+      } else {
+        if (p >= end || *p != ']') { LOGE("%s: expected ']' after elem %d\n", tag, i); return false; }
+        ++p;
+      }
+    }
+    return true;
+  };
+
+  // 把 buf 当作字符串（UTF-8）
+  std::string jsonStr(reinterpret_cast<const char*>(buf.data()), buf.size());
+  LOGI("Received camera JSON (compat): %s\n", jsonStr.c_str());
+
+  size_t viewPos = findArrayStart(jsonStr, "\"view\"");
+  size_t projPos = findArrayStart(jsonStr, "\"proj\"");
   if (viewPos == std::string::npos || projPos == std::string::npos) {
-    LOGE("Invalid camera message format: missing view or proj arrays\n");
+    LOGE("Invalid camera JSON: missing view/proj arrays\n");
     return false;
   }
 
-  // Parse view matrix
-  viewPos += 8;  // Skip "view":["
-  for (int i = 0; i < 16; i++) {
-    size_t nextComma = jsonStr.find_first_of(",]", viewPos);
-    if (nextComma == std::string::npos) {
-      LOGE("Failed to parse view matrix element %d\n", i);
-      return false;
-    }
-    
-    std::string valueStr = jsonStr.substr(viewPos, nextComma - viewPos);
-    viewMatrix[i] = std::stof(valueStr);
-    viewPos = nextComma + 1;
+  if (!parse_float_array_16(jsonStr, viewPos, viewMatrix, "view") ||
+      !parse_float_array_16(jsonStr, projPos, projMatrix, "proj")) {
+    return false;
   }
 
-  // Parse projection matrix
-  projPos += 8;  // Skip "proj":["
-  for (int i = 0; i < 16; i++) {
-    size_t nextComma = jsonStr.find_first_of(",]", projPos);
-    if (nextComma == std::string::npos) {
-      LOGE("Failed to parse projection matrix element %d\n", i);
-      return false;
-    }
-    
-    std::string valueStr = jsonStr.substr(projPos, nextComma - projPos);
-    projMatrix[i] = std::stof(valueStr);
-    projPos = nextComma + 1;
-  }
-
-  LOGI("Successfully parsed camera matrices from Python\n");
+  LOGI("Successfully parsed camera matrices from JSON (compat)\n");
   return true;
 #endif
 }
+
 
 bool ExternalMemoryManager::waitForCameraReady(uint64_t frameNumber) {
 #ifdef _WIN32

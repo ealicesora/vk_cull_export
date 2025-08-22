@@ -24,6 +24,8 @@ import time
 import numpy as np
 from typing import Optional, Tuple, Dict, Any
 import logging
+import struct, numpy as np, socket
+
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -443,7 +445,7 @@ class CUDADriverAPI:
             self.cu_check(err,"signal_semaphore")
             raise RuntimeError(f"cuSignalExternalSemaphoresAsync failed: {err}")
         print("finish signal_semaphore" + str(value))
-        self.synchronize_stream(stream)
+        # self.synchronize_stream(stream)
 
     def wait_semaphore(self, semaphore: ctypes.c_void_p, value: int, stream: Optional[ctypes.c_void_p] = None):
         """Wait for external semaphore timeline value."""
@@ -489,6 +491,11 @@ class VK2TorchClient:
         self.socket = None
         self.connected = False
         
+        self._cam_magic = b'CAM1'
+        self._cam_hdr_packer = struct.Struct('<4sI')  # magic[4], frame(u32), 小端
+        self._cam_buf = np.empty(32, dtype=np.float32)  # 复用缓冲: 16(view)+16(proj)
+
+
         # Handshake data
         self.width = 0
         self.height = 0
@@ -718,42 +725,48 @@ class VK2TorchClient:
             logger.error(f"Failed to wait for ready message: {e}")
             return False
             
+
     def update_camera(self, view_matrix: np.ndarray, proj_matrix: np.ndarray) -> bool:
-        """Update camera parameters via socket."""
         if not self.connected:
             return False
-            
         try:
-            # First signal camera ready semaphore
+            # 1) 先按你原逻辑发相机信号量
             if self.cuda_api:
                 self.cuda_api.signal_semaphore(self.sem_cam, self.frame_number)
-            
-            # Send camera matrices via socket as JSON
-            camera_msg = {
-                "type": "camera",
-                "frame": self.frame_number,
-                "view": view_matrix.flatten().tolist(),
-                "proj": proj_matrix.flatten().tolist()
-            }
-            
-            json_str = json.dumps(camera_msg)
-            json_bytes = json_str.encode('utf-8')
-            
-            # Send JSON size first (4 bytes)
-            json_size = len(json_bytes)
-            size_bytes = struct.pack('I', json_size)
-            self.socket.send(size_bytes)
-            
-            # Send JSON data
-            self.socket.send(json_bytes)
-            
-            logger.info(f"Sent camera matrices for frame {self.frame_number} via socket")
+
+            # 2) 组头: "CAM1" + frame(u32)
+            header = self._cam_hdr_packer.pack(self._cam_magic, int(self.frame_number))
+
+            # 3) 填充 32 个 float32（定长 128B）
+            vm = np.asarray(view_matrix, dtype=np.float32).reshape(16)
+            pm = np.asarray(proj_matrix, dtype=np.float32).reshape(16)
+            self._cam_buf[:16] = vm
+            self._cam_buf[16:] = pm
+            payload_mv = memoryview(self._cam_buf).cast('B')  # 128B
+
+            # 4) 长度前导（header 8B + payload 128B = 136B）
+            total_len = len(header) + len(payload_mv)
+            size_bytes = struct.pack('<I', total_len)
+
+            # 5) 一次发出（优先 sendmsg；不支持则 sendall 三段）
+            try:
+                if hasattr(self.socket, 'sendmsg'):
+                    self.socket.sendmsg([size_bytes, header, payload_mv])
+                else:
+                    self.socket.sendall(size_bytes)
+                    self.socket.sendall(header)
+                    self.socket.sendall(payload_mv)
+            finally:
+                payload_mv.release()
+
+            logger.info(f"Sent CAM1 camera packet frame={self.frame_number} (136B payload)")
             return True
-            
         except Exception as e:
-            logger.error(f"Failed to update camera: {e}")
+            logger.error(f"Failed to update camera(binary): {e}")
             return False
-            
+
+
+
     def get_frame(self, timeout_ms: int = 5000) -> Optional['torch.Tensor']:
         """Get rendered frame as PyTorch tensor (zero-copy)."""
         if not self.connected:

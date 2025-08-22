@@ -159,6 +159,14 @@ LodClusters::LodClusters(const Info& info)
 
   m_frameConfig.frameConstants.lightMixer = 0.5f;
   m_frameConfig.frameConstants.skyParams  = {};
+
+
+  // 只保留一份场景副本
+  m_sceneGridConfig.numCopies = 1;
+  // 下面这行可加可不加，反正 numCopies=1 时不起作用
+  m_sceneGridConfig.uniqueGeometriesForCopies = false;
+
+
 }
 bool LodClusters::initScene(const std::filesystem::path& filePath, bool configChange)
 {
@@ -183,6 +191,8 @@ bool LodClusters::initScene(const std::filesystem::path& filePath, bool configCh
       m_scene->updateSceneGrid(m_sceneGridConfig);
       m_sceneGridConfigLast = m_sceneGridConfig;
       updatedSceneGrid();
+
+
     }
 
     m_sceneFilePath = filePath;
@@ -487,6 +497,8 @@ void LodClusters::onAttach(nvapp::Application* app)
   {
     postInitNewScene();
     initRenderer(m_tweak.renderer);
+    m_sceneInitialized = true;  // Mark scene as initialized
+    LOGI("Scene initialization complete - ready for rendering\n");
   }
 
   m_tweakLast          = m_tweak;
@@ -620,8 +632,20 @@ void LodClusters::handleChanges()
     sceneGridChanged = true;
 
     deinitRenderer();
-    m_scene->updateSceneGrid(m_sceneGridConfig);
-    updatedSceneGrid();
+
+    // m_scene->updateSceneGrid(m_sceneGridConfig);
+    // updatedSceneGrid();
+    if (m_sceneGridConfig.numCopies > 1) {
+      m_scene->updateSceneGrid(m_sceneGridConfig);
+      updatedSceneGrid();
+    } else {
+      // 单份时，保持原场景包围盒做后续相机/裁剪面的参考
+      // 如果 Scene 暴露了 m_gridBbox，可同步一下（否则略过这步也没关系）
+      // m_scene->m_gridBbox = m_scene->m_bbox;
+      updatedSceneGrid(); // 需要的话保留，里面主要是相机速度/裁剪面设置
+    }
+
+
   }
 
   bool shaderChanged = false;
@@ -699,20 +723,51 @@ void LodClusters::handleChanges()
 
 void LodClusters::onRender(VkCommandBuffer cmd)
 {
-  // Block rendering if we're expecting external memory but not connected
-  if (m_frameConfig.externalMemoryManager && !m_frameConfig.externalMemoryManager->isConnected()) {
-    // Don't render anything until Python connects
-    static bool waitMessageShown = false;
-    if (!waitMessageShown) {
-      LOGI("Waiting for Python client connection before rendering...\n");
-      waitMessageShown = true;
+
+  bool verbose = true;
+  // If we have external memory manager and scene is initialized, wait for connection
+  if (m_frameConfig.externalMemoryManager && m_sceneInitialized && 
+      !m_frameConfig.externalMemoryManager->isConnected()) 
+  {
+    if (!m_waitingForConnection) {
+      if (verbose)
+      {
+        LOGI("Scene initialized - waiting for Python client connection...\n");
+        LOGI("Blocking until Python connects to start rendering...\n");
+      }
+
+      
+      // In headless mode, block synchronously
+      if (m_app->isHeadless()) {
+        if (m_frameConfig.externalMemoryManager->acceptClient()) {
+          LOGI("Python client connected! Starting rendering...\n");
+        } else {
+          LOGE("Failed to accept Python client\n");
+          return;
+        }
+      } else {
+        // In GUI mode, just return and wait
+        m_waitingForConnection = true;
+        return;
+      }
+    } else {
+      // Still waiting in GUI mode
+      return;
     }
-    return;
+  }
+  
+  // Reset waiting flag once connected
+  if (m_waitingForConnection && m_frameConfig.externalMemoryManager && 
+      m_frameConfig.externalMemoryManager->isConnected()) {
+    m_waitingForConnection = false;
+    if (verbose)
+    LOGI("Python client connected! Starting rendering...\n");
   }
 
   static int renderCount = 0;
   static int externalFrameCount = 0;
   if (renderCount < 10 || renderCount % 100 == 0) {
+    if (verbose)
     LOGI("onRender called (count: %d)\n", renderCount);
   }
   renderCount++;
@@ -884,7 +939,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
         
         // Store it for later use when signaling frame done
         m_currentExternalFrameNumber = frameNumber;
-        
+        if (verbose)
         LOGI("====== Frame %lu: External memory protocol active (app frame: %lu, onRender: %d) ======\n", 
              frameNumber, currentFrame, renderCount - 1);
       
@@ -893,10 +948,12 @@ void LodClusters::onRender(VkCommandBuffer cmd)
         static int framesAfterConnection = 0;
         if (framesAfterConnection < -1) {
           framesAfterConnection++;
+          if (verbose)
           LOGI("Frame %lu: Skipping camera wait (frame %d after connection)\n", frameNumber, framesAfterConnection);
         } else {
           // Wait for Python to signal camera ready
           // This is a synchronous wait - the frame will not proceed until Python provides camera data
+          if (verbose)
           LOGI("Frame %lu: Waiting for camera ready signal...\n", frameNumber);
 
           if(!m_frameConfig.externalMemoryManager->waitForCameraReady(frameNumber))
@@ -905,25 +962,30 @@ void LodClusters::onRender(VkCommandBuffer cmd)
           }
           else
           {
+            if (verbose)
             LOGI("Frame %lu: Camera ready signal received, now receiving camera matrices...\n", frameNumber);
             
             // Receive camera matrices from Python via socket
             float viewMatrix[16], projMatrix[16];
             if (m_frameConfig.externalMemoryManager->receiveCameraMatrices(viewMatrix, projMatrix)) {
               // Print received matrices in detail
-              LOGI("Frame %lu: Received camera matrices from Python:\n", frameNumber);
-              LOGI("  View Matrix:\n");
-              for (int row = 0; row < 4; row++) {
-                LOGI("    [%8.4f %8.4f %8.4f %8.4f]\n", 
-                     viewMatrix[row*4], viewMatrix[row*4+1], 
-                     viewMatrix[row*4+2], viewMatrix[row*4+3]);
+              if (verbose)
+              {
+                LOGI("Frame %lu: Received camera matrices from Python:\n", frameNumber);
+                LOGI("  View Matrix:\n");
+                for (int row = 0; row < 4; row++) {
+                  LOGI("    [%8.4f %8.4f %8.4f %8.4f]\n", 
+                      viewMatrix[row*4], viewMatrix[row*4+1], 
+                      viewMatrix[row*4+2], viewMatrix[row*4+3]);
+                }
+                LOGI("  Projection Matrix:\n");
+                for (int row = 0; row < 4; row++) {
+                  LOGI("    [%8.4f %8.4f %8.4f %8.4f]\n",
+                      projMatrix[row*4], projMatrix[row*4+1],
+                      projMatrix[row*4+2], projMatrix[row*4+3]);
+                }
               }
-              LOGI("  Projection Matrix:\n");
-              for (int row = 0; row < 4; row++) {
-                LOGI("    [%8.4f %8.4f %8.4f %8.4f]\n",
-                     projMatrix[row*4], projMatrix[row*4+1],
-                     projMatrix[row*4+2], projMatrix[row*4+3]);
-              }
+
               
               // Convert from float arrays to glm::mat4 (column-major)
               glm::mat4 pythonView = glm::mat4(
@@ -958,14 +1020,17 @@ void LodClusters::onRender(VkCommandBuffer cmd)
               glm::mat4 viewNoTrans = pythonView;
               viewNoTrans[3] = {0.0f, 0.0f, 0.0f, 1.0f};
               frameConstants.skyProjMatrixI = glm::inverse(pythonProj * viewNoTrans);
-              
-              // Print extracted camera information
-              LOGI("  Extracted Camera Position: [%.4f, %.4f, %.4f]\n",
-                   frameConstants.viewPos.x, frameConstants.viewPos.y, frameConstants.viewPos.z);
-              LOGI("  Extracted Camera Direction: [%.4f, %.4f, %.4f]\n",
-                   frameConstants.viewDir.x, frameConstants.viewDir.y, frameConstants.viewDir.z);
-              
-              LOGI("Frame %lu: Successfully updated frame constants with Python camera matrices\n", frameNumber);
+              if (verbose)
+              {
+                // Print extracted camera information
+                LOGI("  Extracted Camera Position: [%.4f, %.4f, %.4f]\n",
+                    frameConstants.viewPos.x, frameConstants.viewPos.y, frameConstants.viewPos.z);
+                LOGI("  Extracted Camera Direction: [%.4f, %.4f, %.4f]\n",
+                    frameConstants.viewDir.x, frameConstants.viewDir.y, frameConstants.viewDir.z);
+                
+                LOGI("Frame %lu: Successfully updated frame constants with Python camera matrices\n", frameNumber);
+              }
+
             } else {
               LOGW("Frame %lu: Failed to receive camera matrices, using default camera\n", frameNumber);
             }
@@ -1010,13 +1075,6 @@ void LodClusters::onRender(VkCommandBuffer cmd)
                         m_resources.m_frameBuffer.imgColor;
 
 
-    // recordCopyToExternal(cmd, finalImage, currentLayout,
-    //                       m_resources.m_frameBuffer.renderSize.width,
-    //                       m_resources.m_frameBuffer.renderSize.height,
-    //                       m_frameConfig.externalMemoryManager->getColorBuffer(),
-    //                       m_frameConfig.externalMemoryManager->getRowPitchBytes());
-
-    // Add copy command to the current command buffer
     m_frameConfig.externalMemoryManager->cmdCopyImageToColorBuffer(
         cmd, finalImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 
         tex.extent.width, 
@@ -1087,7 +1145,7 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath)
   nvgui::SetCameraJsonFile(filePath);
 
   glm::vec3 modelExtent = m_scene->m_bbox.hi - m_scene->m_bbox.lo;
-  float     modelRadius = glm::length(modelExtent) * 0.5f;
+  float     modelRadius = glm::length(modelExtent) * 0.5f * 0.1f;
   glm::vec3 modelCenter = (m_scene->m_bbox.hi + m_scene->m_bbox.lo) * 0.5f;
 
   bool bigScene = m_scene->m_isBig;
