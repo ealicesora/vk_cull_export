@@ -462,8 +462,11 @@ bool ExternalMemoryManager::acceptClient() {
     return false;
   }
 
-  LOGI("Python client connected\n");
-  return sendHandshakeInfo();
+  LOGI("Python client connected in ExternalMemoryManager::acceptClient\n");
+  LOGI("Now calling sendHandshakeInfo...\n");
+  bool result = sendHandshakeInfo();
+  LOGI("sendHandshakeInfo returned %s\n", result ? "true" : "false");
+  return result;
 #endif
 }
 
@@ -549,6 +552,7 @@ bool ExternalMemoryManager::sendHandshakeInfo() {
   fds.push_back(camSemFd);
   fds.push_back(doneSemFd);
 
+  LOGI("About to send FDs via SCM_RIGHTS...\n");
   bool success = sendFds(fds);
   
   // Close local copies of FDs
@@ -601,14 +605,16 @@ bool ExternalMemoryManager::sendFds(const std::vector<int>& fds) {
   cmsg->cmsg_len = CMSG_LEN(sizeof(int) * fds.size());
   memcpy(CMSG_DATA(cmsg), fds.data(), sizeof(int) * fds.size());
 
+  LOGI("Sending %zu FDs via sendmsg on socket %d\n", fds.size(), m_clientSocket);
   ssize_t sent = sendmsg(m_clientSocket, &msg, 0);
   delete[] cmsgBuf;
 
   if (sent < 0) {
-    LOGE("Failed to send FDs via SCM_RIGHTS: %s\n", strerror(errno));
+    LOGE("Failed to send FDs via SCM_RIGHTS: %s (errno %d)\n", strerror(errno), errno);
     return false;
   }
 
+  LOGI("Successfully sent %zd bytes with FDs\n", sent);
   return true;
 #endif
 }
@@ -624,12 +630,23 @@ bool ExternalMemoryManager::waitForCameraReady(uint64_t frameNumber) {
   VkSemaphoreWaitInfo waitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
   waitInfo.semaphoreCount = 1;
   waitInfo.pSemaphores = &m_cameraSemaphore;
-  waitInfo.pValues = &frameNumber;
+  waitInfo.pValues = &(frameNumber);
+
+
+  uint64_t cur = 0;
+  VkResult rc = vkGetSemaphoreCounterValue(m_device, m_cameraSemaphore, &cur);
+  if (rc != VK_SUCCESS) {
+    LOGE("vkGetSemaphoreCounterValue failed: %d\n", rc);
+    return false;
+  }
+  LOGI("camera sem counter before wait=%lu target=%lu \n", cur, frameNumber);
+
 
   // Use a timeout of 100ms instead of waiting forever
   // This allows the app to continue rendering even if Python isn't sending frames
-  uint64_t timeout = 100000000; // 100ms in nanoseconds
-  VkResult result = vkWaitSemaphores(m_device, &waitInfo, timeout);
+   const uint64_t timeout_ns = 100ull * 1000ull * 1000ull *10ull;
+  LOGI("vkWaitSemaphores  %lu\n", frameNumber);
+  VkResult result = vkWaitSemaphores(m_device, &waitInfo, UINT64_MAX);
   
   if (result == VK_TIMEOUT) {
     // Timeout is not an error - just means Python hasn't sent camera data yet
@@ -945,6 +962,25 @@ void ExternalMemoryManager::cmdCopyImageToColorBuffer(VkCommandBuffer cmd, VkIma
   region.imageExtent = {width, height, 1};
   
   vkCmdCopyImageToBuffer(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_colorReadbackBuffer, 1, &region);
+  
+
+  // 拷贝完成 → 给着色器采样
+  VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+  b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  b.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  b.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b.image = srcImage;
+  b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+  vkCmdPipelineBarrier(cmd,
+      VK_PIPELINE_STAGE_TRANSFER_BIT,          // srcStage
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,   // dstStage
+      0, 0,nullptr, 0,nullptr, 1,&b);
+
+
   
   LOGI("Added image to buffer copy command: %ux%u -> %zu bytes\n", width, height, m_colorBufferSize);
 #endif

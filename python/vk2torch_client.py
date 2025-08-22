@@ -421,32 +421,6 @@ class CUDADriverAPI:
         if err != CUDA_SUCCESS:
             raise RuntimeError(f"cuImportExternalMemory failed: {err} (fd={fd}, size={size}, dedicated={dedicated})")
         return ext_mem
-
-    # def signal_semaphore(self, semaphore: ctypes.c_void_p, value: int, stream: Optional[ctypes.c_void_p] = None):
-    #     """Signal external semaphore with timeline value."""
-    #     if stream is None:
-    #         stream = self.stream
-
-        
-    #     # Create and populate parameters
-    #     params = CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS()
-    #     ctypes.memset(ctypes.byref(params), 0, ctypes.sizeof(params))
-    #     params.params.fence.value = ctypes.c_uint64(value)
-    #     params.flags = 0
-        
-        
-
-    #     result = self.cuda.cuSignalExternalSemaphoresAsync(
-    #         (ctypes.c_void_p * 1)(semaphore),
-    #         (CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS * 1)(params),
-    #         1, ctypes.c_void_p(0)
-    #     )
-
-    #     if result != CUDA_SUCCESS:
-    #         raise RuntimeError(f"cuSignalExternalSemaphoresAsync failed: {result}")
-    #     print("cuSignalExternalSemaphoresAsync succeed")
-    #     # Synchronize stream to ensure signal is sent
-    #     self.synchronize_stream(stream)
             
 
     def signal_semaphore(self, semaphore, value:int, stream=None):
@@ -457,16 +431,18 @@ class CUDADriverAPI:
         params.params.fence.value = ctypes.c_uint64(value)     # ★ 关键
 
         params.flags = 0
-
+        print("on signal_semaphore" + str(value))
         err = self.cuda.cuSignalExternalSemaphoresAsync(
             (ctypes.c_void_p * 1)(semaphore),
             (CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS * 1)(params),
             1,
-             ctypes.c_void_p(0),
+            stream if stream is not None else ctypes.c_void_p(0),
         )
 
         if err != CUDA_SUCCESS:
+            self.cu_check(err,"signal_semaphore")
             raise RuntimeError(f"cuSignalExternalSemaphoresAsync failed: {err}")
+        print("finish signal_semaphore" + str(value))
         self.synchronize_stream(stream)
 
     def wait_semaphore(self, semaphore: ctypes.c_void_p, value: int, stream: Optional[ctypes.c_void_p] = None):
@@ -474,24 +450,23 @@ class CUDADriverAPI:
         if stream is None:
             stream = self.stream
         
-
-        
-        # Create and populate parameters
         params = CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS()
+        ctypes.memset(ctypes.byref(params), 0, ctypes.sizeof(params))
         params.params.fence.value = ctypes.c_uint64(value)
         params.flags = 0
         
-        # Wait on semaphore
         result = self.cuda.cuWaitExternalSemaphoresAsync(
-            (ctypes.c_void_p * 1)(semaphore),                 # ✅ 数组
+            (ctypes.c_void_p * 1)(semaphore),                 # 数组
             (CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS * 1)(params),
             1,
             stream if stream is not None else ctypes.c_void_p(0),
         )
 
         if result != CUDA_SUCCESS:
+            self.cu_check(result,"cuWaitExternalSemaphoresAsync")
             raise RuntimeError(f"cuWaitExternalSemaphoresAsync failed: {result}")
-        print("wait cuWaitExternalSemaphoresAsync succeed")
+        print("wait cuWaitExternalSemaphoresAsync succeed" + str(value))
+
     def synchronize_stream(self, stream: Optional[ctypes.c_void_p] = None):
         """Synchronize CUDA stream."""
         if stream is None:
@@ -767,15 +742,19 @@ class VK2TorchClient:
             
         try:
             # Wait for frame completion
+            self.cuda_api.synchronize_stream()
             start_time = time.time()
             self.cuda_api.wait_semaphore(self.sem_done, self.frame_number)
+ 
             self.cuda_api.synchronize_stream()
-            
+            # return None
+            print("syned")
             wait_time = (time.time() - start_time) * 1000
             if wait_time > timeout_ms:
                 logger.warning(f"Frame wait took {wait_time:.1f}ms (timeout: {timeout_ms}ms)")
                 
             # Create CuPy array from device memory (zero-copy)
+            print("start copy memory")
             umem = cp.cuda.UnownedMemory(
                 int(self.dev_color.value), 
                 self.color_readback_bytes, 
@@ -796,7 +775,7 @@ class VK2TorchClient:
             
             # Increment frame counter for next frame
             self.frame_number += 1
-            
+            # print(torch_tensor)
             return torch_tensor
             
         except Exception as e:
@@ -893,7 +872,7 @@ class VK2TorchClient:
                 test_value = 100 + i
                 
                 # Signal camera semaphore
-                logger.info(f"  [{i+1}/{iterations}] Signaling value {test_value}...")
+                logger.info(f"[{i+1}/{iterations}] Signaling value {test_value}...")
                 self.cuda_api.signal_semaphore(self.sem_cam, test_value)
                 
                 # Wait for response on done semaphore

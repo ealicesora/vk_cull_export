@@ -1,0 +1,102 @@
+Enabling external memory extensions for Python integration
+Creating Vulkan Context
+| createInstance -> 35.449 ms
+Extension not available: VK_KHR_ray_tracing_position_fetch 
+Extension not available: VK_KHR_ray_query 
+Extension not available: VK_NV_cluster_acceleration_structure  (v.0 >= 2)
+|-> 286.518 ms
+Initializing external memory manager for Python integration
+[INFO] Initializing External Memory Manager with UDS: /tmp/vk2torch.sock
+[INFO] Creating camera buffer (size: 4096 bytes)
+[INFO] External buffer export check passed (features: 0x6)
+[INFO] Using dedicated allocation (required=no, forced=yes)
+[INFO] Applying VkMemoryDedicatedAllocateInfo to allocation
+[INFO] Found memory type 1 with properties 0x1 for external export
+[INFO] Using memory type index 1 for external buffer
+[INFO]   Actual allocated size: 4096 bytes (dedicated: yes)
+[INFO] Creating color readback buffer (size: 8294400 bytes)
+[INFO] External buffer export check passed (features: 0x6)
+[INFO] Using dedicated allocation (required=no, forced=yes)
+[INFO] Applying VkMemoryDedicatedAllocateInfo to allocation
+[INFO] Found memory type 1 with properties 0x1 for external export
+[INFO] Using memory type index 1 for external buffer
+[INFO]   Actual allocated size: 8294400 bytes (dedicated: yes)
+[INFO] Creating timeline semaphores
+[INFO] UDS server listening on /tmp/vk2torch.sock
+[INFO] External Memory Manager initialized successfully
+GUI mode with UDS enabled - Python client can connect at any time
+Waiting for Python client connection in background...
+[INFO] Waiting for Python client connection...
+Adding Default Menu
+Adding DefaultWindowTitle
+Adding Logger UI
+WARNING: Cluster raytracing extension not supported
+framebuffer: 256 x 256
+Loading scene /home/gongyuning/Desktop/vk_cull/vk_lod_clusters/_bin/Release/../../_downloaded_resources/matrix_city_new.glb
+... geometry load & processing: geometries 1, threads outer 1 inner 8
+  Processing geometry 1/1 (new)
+    Processing mesh: 4262103 triangles, 2171695 vertices -> meshoptimizer clustering...
+    Mesh clustering completed: 7.13 seconds
+    Generated 83114 clusters, 16 LOD levels
+    Building cluster strips...
+    Building cluster vertices...
+    Building bounding boxes...
+... geometry load & processing: 100%
+... geometry load & processing: 7665.985778 milliseconds
+Average triangles per strip 18.39
+Scene::saveCache saved /home/gongyuning/Desktop/vk_cull/vk_lod_clusters/_bin/Release/../../_downloaded_resources/matrix_city_new.glb.nvsngeo
+operations memory: 123 KB - stream requests
+operations memory: 18.9 MB - stream resident
+operations memory: 246 KB - stream updates
+operations memory: 0 B - stream storage
+operations memory: 432 B - stream shaderio
+operations memory: 128 B - stream geo buffer
+Initializing renderer and compiling shaders
+init renderer 0
+mesh shader config: 128 triangles 128 vertices
+operations memory: 19.2 MB - rscene total
+operations memory: 280 B - build shaderio
+operations memory: 67.1 MB - build data
+operations memory: 33.6 MB - build traversal
+Adding Camera Manipulator
+Running application
+framebuffer: 4096 x 2304
+onRender called (count: 0)
+onRender called (count: 1)
+framebuffer: 3068 x 1452
+onRender called (count: 2)
+onRender called (count: 3)
+onRender called (count: 4)
+onRender called (count: 5)
+onRender called (count: 6)
+onRender called (count: 7)
+onRender called (count: 8)
+onRender called (count: 9)
+onRender called (count: 100)
+onRender called (count: 200)
+onRender called (count: 300)
+onRender called (count: 400)
+onRender called (count: 500)
+onRender called (count: 600)
+onRender called (count: 700)
+onRender called (count: 800)
+onRender called (count: 900)
+onRender called (count: 1000)
+onRender called (count: 1100)
+onRender called (count: 1200)
+onRender called (count: 1300)
+onRender called (count: 1400)
+onRender called (count: 1500)
+onRender called (count: 1600)
+onRender called (count: 1700)
+onRender called (count: 1800)
+onRender called (count: 1900)
+onRender called (count: 2000)
+[INFO] Python client connected
+[INFO] Vulkan device UUID: 3d4aa2ab8bf3f2d5ba4e606742f50c10
+=== VULKAN SIDE: Exporting FDs ===
+  Camera Memory FD:    70
+  Color Memory FD:     71
+  Camera Semaphore FD: 72
+  Done Semaphore FD:   73
+===================================

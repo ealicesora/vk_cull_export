@@ -80,8 +80,14 @@ public:
   void addCameraWaitToSubmit(VkSubmitInfo& submitInfo, uint64_t frameNumber, VkTimelineSemaphoreSubmitInfo& timelineInfo, 
                              VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
   void addFrameDoneSignalToSubmit(VkSubmitInfo& submitInfo, uint64_t frameNumber, VkTimelineSemaphoreSubmitInfo& timelineInfo);
-  void cmdCopyImageToColorBuffer(VkCommandBuffer cmd, VkImage srcImage, VkImageLayout srcLayout, uint32_t width, uint32_t height);
+  // void cmdCopyImageToColorBuffer(VkCommandBuffer cmd, VkImage srcImage, VkImageLayout srcLayout, uint32_t width, uint32_t height);
   
+  void cmdCopyImageToColorBuffer(VkCommandBuffer cmd,
+                                                        VkImage srcImage,
+                                                        VkImageLayout currentLayout, // 传“真实当前布局”
+                                                        uint32_t width, uint32_t height);
+
+
   // Frame counter management
   uint64_t getNextFrameNumber() { 
     if (m_currentFrameNumber == 0) {

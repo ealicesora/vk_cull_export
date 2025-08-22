@@ -57,6 +57,10 @@ int main(int argc, char** argv)
   appInfo.name    = TARGET_NAME;
   appInfo.useMenu = true;
 
+  appInfo.windowSize = {1920,1080};
+  appInfo.headless = true;
+  appInfo.headlessFrameCount = 1000;
+
   VkPhysicalDeviceMeshShaderFeaturesNV meshNV = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_NV};
   VkPhysicalDeviceAccelerationStructureFeaturesKHR accKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
   VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
@@ -232,7 +236,7 @@ int main(int argc, char** argv)
     nvutils::ScopedTimer st("Creating Vulkan Context");
 
 
-#if USE_DLSS
+  #if USE_DLSS
     // Adding the DLSS extensions to the instance
     static std::vector<VkExtensionProperties> extraInstanceExtensions;
     DlssRayReconstruction::getRequiredInstanceExtensions({}, extraInstanceExtensions);
@@ -240,7 +244,7 @@ int main(int argc, char** argv)
     {
       vkSetup.instanceExtensions.emplace_back(ext.extensionName);
     }
-#endif
+  #endif
     VkResult result{};
 
     vkContext.contextInfo = vkSetup;
@@ -248,7 +252,7 @@ int main(int argc, char** argv)
     result = vkContext.createInstance();
     result = vkContext.selectPhysicalDevice();
 
-#if USE_DLSS
+  #if USE_DLSS
     // Adding the extra device extensions required by DLSS
     static std::vector<VkExtensionProperties> extraDeviceExtensions;
     DlssRayReconstruction::getRequiredDeviceExtensions({}, vkContext.getInstance(), vkContext.getPhysicalDevice(), extraDeviceExtensions);
@@ -256,7 +260,7 @@ int main(int argc, char** argv)
     {
       vkContext.contextInfo.deviceExtensions.push_back({.extensionName = ext.extensionName, .specVersion = ext.specVersion});
     }
-#endif
+  #endif
 
     result = vkContext.createDevice();
     NVVK_CHECK(result);
@@ -322,6 +326,7 @@ int main(int argc, char** argv)
       // GUI mode with UDS support
       LOGI("GUI mode with UDS enabled - Python client can connect at any time\n");
       
+
       // Create a thread to handle Python client connection
       std::thread clientThread([&externalMemoryManager, &sampleElement]() {
         LOGI("Waiting for Python client connection in background...\n");
@@ -340,7 +345,11 @@ int main(int argc, char** argv)
         }
       });
       clientThread.detach(); // Let it run in background
+
+      
     }
+
+
   }
 
   // Normal GUI mode - set up application

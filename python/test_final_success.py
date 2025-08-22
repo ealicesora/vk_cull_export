@@ -9,6 +9,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import numpy as np
+
 def test_success():
     """Quick success test."""
     socket_path = "/tmp/success_test.sock"
@@ -43,7 +45,7 @@ def test_success():
                     print("🎉 ALL CORE FUNCTIONALITY WORKING!")
                     
                     # Test one frame capture
-                    import numpy as np
+                    
                     view = np.eye(4, dtype=np.float32)
                     proj = np.eye(4, dtype=np.float32)
                     

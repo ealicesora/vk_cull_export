@@ -28,6 +28,59 @@
 
 bool g_verbose = false;
 
+
+
+// 假设：externalMemoryManager 里有这些信息
+//  - VkBuffer colorBuffer;              // 外部(导出)线性buffer
+//  - uint32_t rowPitchBytes;            // 握手传来的 row_pitch
+//  - uint32_t bytesPerPixel = 4;        // RGBA8
+//  - 保证 buffer 的 size >= rowPitchBytes * height
+//  - buffer 创建时带 VK_BUFFER_USAGE_TRANSFER_DST_BIT
+
+void recordCopyToExternal(VkCommandBuffer cmd,
+                          VkImage srcImage,
+                          VkImageLayout srcOldLayout, // 实际当前布局
+                          uint32_t width, uint32_t height,
+                          VkBuffer dstBuffer,
+                          uint32_t rowPitchBytes)
+{
+  // 1) image: COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC_OPTIMAL
+  VkImageMemoryBarrier2 pre{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+  pre.srcStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  pre.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  pre.dstStageMask  = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+  pre.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+  pre.oldLayout     = srcOldLayout;                        // ⚠️ 用真实布局
+  pre.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  pre.image         = srcImage;
+  pre.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+  VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+  dep.imageMemoryBarrierCount = 1;
+  dep.pImageMemoryBarriers    = &pre;
+  vkCmdPipelineBarrier2(cmd, &dep);
+
+  // 2) copy: image -> buffer（行距用“像素”，不是字节）
+  VkBufferImageCopy region{};
+  region.bufferOffset      = 0;                       // 4 字节对齐即可
+  region.bufferRowLength   = rowPitchBytes / 4;       // RGBA8 => /4
+  region.bufferImageHeight = 0;                       // 按 imageExtent
+  region.imageSubresource  = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.imageOffset       = {0, 0, 0};
+  region.imageExtent       = {width, height, 1};
+  vkCmdCopyImageToBuffer(cmd, srcImage,
+                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         dstBuffer, 1, &region);
+
+  // 3) （可选）把 image 转回后续需要的布局（如果后面还要用）
+  // VkImageMemoryBarrier2 post = ... old=TRANSFER_SRC_OPTIMAL -> new=COLOR_ATTACHMENT_OPTIMAL / SHADER_READ_ONLY_OPTIMAL
+  // vkCmdPipelineBarrier2(cmd, &dep2);
+
+  // 说明：buffer 侧不需要另外 barrier；跨 API 的可见性由 submit 时的 timeline semaphore 保证。
+}
+
+
+
 namespace lodclusters {
 
 LodClusters::LodClusters(const Info& info)
@@ -243,6 +296,8 @@ void LodClusters::deinitRenderer()
 
 void LodClusters::initRenderer(RendererType rtype)
 {
+  // handskaing here
+
   LOGI("Initializing renderer and compiling shaders\n");
   deinitRenderer();
   if(!m_renderScene)
@@ -308,7 +363,7 @@ void LodClusters::onAttach(nvapp::Application* app)
 {
   m_app = app;
 
-  m_tweak.supersample = std::max(1, m_tweak.supersample);
+  m_tweak.supersample = 1;std::max(1, m_tweak.supersample);
 
   m_info.cameraManipulator->setMode(nvutils::CameraManipulator::Fly);
 
@@ -321,6 +376,7 @@ void LodClusters::onAttach(nvapp::Application* app)
     vkGetPhysicalDeviceProperties2(app->getPhysicalDevice(), &physicalProperties);
     // pseudo heuristic
     // larger GPUs seem better off with lower values
+
     if(smProperties.shaderSMCount * smProperties.shaderWarpsPerSM > 4096)
       m_frameConfig.traversalPersistentThreads = smProperties.shaderSMCount * smProperties.shaderWarpsPerSM * 2;
     else if(smProperties.shaderSMCount * smProperties.shaderWarpsPerSM > 2048 + 1024)
@@ -538,6 +594,7 @@ void LodClusters::updatedSceneGrid()
 
 void LodClusters::handleChanges()
 {
+  
   if(m_tweak.clusterConfig != m_tweakLast.clusterConfig)
   {
     updatedClusterConfig();
@@ -604,9 +661,9 @@ void LodClusters::handleChanges()
      || rendererCfgChanged(m_rendererConfig.useSorting) || rendererCfgChanged(m_rendererConfig.numRenderClusterBits)
      || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits) || rendererCfgChanged(m_rendererConfig.useBlasSharing)
      || rendererCfgChanged(m_rendererConfig.useRenderStats) || rendererCfgChanged(m_rendererConfig.useSeparateGroups)
-#if USE_DLSS
-     || rendererCfgChanged(m_rendererConfig.useDlss) || rendererCfgChanged(m_rendererConfig.dlssQuality)
-#endif
+  #if USE_DLSS
+      || rendererCfgChanged(m_rendererConfig.useDlss) || rendererCfgChanged(m_rendererConfig.dlssQuality)
+  #endif
   )
   {
     rendererChanged = true;
@@ -642,12 +699,28 @@ void LodClusters::handleChanges()
 
 void LodClusters::onRender(VkCommandBuffer cmd)
 {
+
+      // if (!m_frameConfig.externalMemoryManager->acceptClient()) {
+    //   LOGE("Failed to accept Python client in offscreen mode\n");
+    //   return ;
+    // }
+
+  static int renderCount = 0;
+  static int externalFrameCount = 0;
+  if (renderCount < 10 || renderCount % 100 == 0) {
+    LOGI("onRender called (count: %d)\n", renderCount);
+  }
+  renderCount++;
+  
   double time = m_clock.getSeconds();
 
   m_resources.beginFrame(m_app->getFrameCycleIndex());
 
   m_frameConfig.windowSize = m_windowSize;
   m_frameConfig.hbaoActive = false;
+  
+  // Track if we should process external memory this frame
+  bool shouldProcessExternalFrame = false;
 
   if(m_renderer)
   {
@@ -696,9 +769,9 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     frameConstants.nearPlane   = m_info.cameraManipulator->getClipPlanes().x;
     frameConstants.farPlane    = m_info.cameraManipulator->getClipPlanes().y;
     frameConstants.wUpDir      = m_info.cameraManipulator->getUp();
-#if USE_DLSS
+  #if USE_DLSS
     frameConstants.jitter = shaderio::dlssJitter(m_frames);
-#endif
+  #endif
     frameConstants.fov = glm::radians(m_info.cameraManipulator->getFov());
 
     glm::mat4 projection =
@@ -784,38 +857,61 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     }
 
     // External memory frame protocol: Wait for camera ready before rendering
+    bool shouldProcessExternalFrame = false;
+
+
+
+
     if(m_frameConfig.externalMemoryManager && m_frameConfig.externalMemoryManager->isConnected())
     {
-      // Get the next frame number and use it consistently throughout this frame
-      uint64_t frameNumber = m_frameConfig.externalMemoryManager->getNextFrameNumber();
+      //printf("this is hit");
+      // Only process external memory protocol once per actual frame
+      // Check if we haven't processed this frame yet
+      static uint64_t lastProcessedExternalFrame = 0;
+      uint64_t currentFrame = m_frames;  // Use the actual frame counter
       
-      // Store it for later use when signaling frame done
-      m_currentExternalFrameNumber = frameNumber;
+      if (currentFrame > lastProcessedExternalFrame) {
+        shouldProcessExternalFrame = true;
+        lastProcessedExternalFrame = currentFrame;
+        
+        // Get the next frame number and use it consistently throughout this frame
+        uint64_t frameNumber = m_frameConfig.externalMemoryManager->getNextFrameNumber();
+        
+        // Store it for later use when signaling frame done
+        m_currentExternalFrameNumber = frameNumber;
+        
+        LOGI("====== Frame %lu: External memory protocol active (app frame: %lu, onRender: %d) ======\n", 
+             frameNumber, currentFrame, renderCount - 1);
       
-      // For the first few frames after connection, don't wait for camera ready
-      // This allows the render loop to start and Python to synchronize
-      static int framesAfterConnection = 0;
-      if (framesAfterConnection < 2) {
-        framesAfterConnection++;
-        LOGI("Frame %lu: Skipping camera wait (frame %d after connection)\n", frameNumber, framesAfterConnection);
-      } else {
-        // Wait for Python to signal camera ready
-        // This is a synchronous wait - the frame will not proceed until Python provides camera data
-        if(!m_frameConfig.externalMemoryManager->waitForCameraReady(frameNumber))
-        {
-          LOGW("Frame %lu: Camera ready timeout, proceeding with existing camera data\n", frameNumber);
-        }
-        else
-        {
-          LOGI("Frame %lu: Camera ready signal received, proceeding with rendering\n", frameNumber);
+        // For the first few frames after connection, don't wait for camera ready
+        // This allows the render loop to start and Python to synchronize
+        static int framesAfterConnection = 0;
+        if (framesAfterConnection < -1) {
+          framesAfterConnection++;
+          LOGI("Frame %lu: Skipping camera wait (frame %d after connection)\n", frameNumber, framesAfterConnection);
+        } else {
+          // Wait for Python to signal camera ready
+          // This is a synchronous wait - the frame will not proceed until Python provides camera data
+          LOGI("Frame %lu: Waiting for camera ready signal...\n", frameNumber);
+
+          if(!m_frameConfig.externalMemoryManager->waitForCameraReady(frameNumber))
+          {
+            LOGW("Frame %lu: Camera ready timeout, proceeding with existing camera data\n", frameNumber);
+          }
+          else
+          {
+            LOGI("Frame %lu: Camera ready signal received, proceeding with rendering\n", frameNumber);
+            
+            // Camera data has been written directly to the GPU buffer by Python via CUDA
+            // The renderer will use this buffer in its shaders
+            // For now, we continue using the camera manipulator matrices
+            // TODO: Future work - bind the camera buffer to shaders for GPU-side reading
+          }
+
           
-          // Camera data has been written directly to the GPU buffer by Python via CUDA
-          // The renderer will use this buffer in its shaders
-          // For now, we continue using the camera manipulator matrices
-          // TODO: Future work - bind the camera buffer to shaders for GPU-side reading
         }
-      }
-    }
+      }  // end if (currentFrame > lastProcessedExternalFrame)
+    }  // end if (externalMemoryManager && isConnected)
 
     m_renderer->render(cmd, m_resources, *m_renderScene, m_frameConfig, m_profilerGpuTimer);
   }
@@ -828,43 +924,89 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     m_resources.postProcessFrame(cmd, m_frameConfig, m_profilerGpuTimer);
   }
 
-  m_resources.endFrame();
+ 
 
   // External memory frame protocol integration (window mode)
-  bool hasExternalMemory = false;
-  if(m_frameConfig.externalMemoryManager && m_frameConfig.externalMemoryManager->isConnected())
+  // Check if we have an active external frame number to process
+  if(m_frameConfig.externalMemoryManager && m_frameConfig.externalMemoryManager->isConnected() && m_currentExternalFrameNumber > 0)
   {
-    hasExternalMemory = true;
-    
     // Choose the appropriate final color image (resolved if MSAA is used)
     VkImage finalImage = m_resources.m_frameBuffer.useResolved ? 
                           m_resources.m_frameBuffer.imgColorResolved.image :
                           m_resources.m_frameBuffer.imgColor.image;
-    VkImageLayout finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;  // Typical layout after rendering
+    VkImageLayout finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;  // Typical layout after rendering
     
+    const VkImageLayout currentLayout =
+        m_resources.m_frameBuffer.useResolved ?
+          m_resources.m_frameBuffer.imgColorResolved.descriptor.imageLayout : // 若你没有，至少传 COLOR_ATTACHMENT_OPTIMAL
+          m_resources.m_frameBuffer.imgColor.descriptor.imageLayout;
+
+
+    const auto& tex = m_resources.m_frameBuffer.useResolved ?
+                        m_resources.m_frameBuffer.imgColorResolved :
+                        m_resources.m_frameBuffer.imgColor;
+
+
+    // recordCopyToExternal(cmd, finalImage, currentLayout,
+    //                       m_resources.m_frameBuffer.renderSize.width,
+    //                       m_resources.m_frameBuffer.renderSize.height,
+    //                       m_frameConfig.externalMemoryManager->getColorBuffer(),
+    //                       m_frameConfig.externalMemoryManager->getRowPitchBytes());
+
     // Add copy command to the current command buffer
     m_frameConfig.externalMemoryManager->cmdCopyImageToColorBuffer(
-        cmd, finalImage, finalLayout, 
-        m_resources.m_frameBuffer.renderSize.width, 
-        m_resources.m_frameBuffer.renderSize.height
+        cmd, finalImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 
+        tex.extent.width, 
+        tex.extent.height
     );
     
+
+
+
+
+
     LOGI("Frame %lu: External memory copy added to command buffer\n", m_currentExternalFrameNumber);
   }
 
+  m_resources.endFrame();
   // signal new semaphore state with this command buffer's submit
   VkSemaphoreSubmitInfo semSubmit = m_resources.m_queueStates.primary.advanceSignalSubmit(VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
   m_app->addSignalSemaphore(semSubmit);
   
-  // Add frame done semaphore if external memory is active
-  if(hasExternalMemory)
+  // Add frame done semaphore if we have an active external frame
+  // CRITICAL: Only signal if we actually processed a NEW external frame this render call
+  static uint64_t lastSignaledFrameNumber = 0;
+  
+  // Frame done signal
+  if(m_frameConfig.externalMemoryManager && m_frameConfig.externalMemoryManager->isConnected() 
+     && m_currentExternalFrameNumber > 0 
+     && m_currentExternalFrameNumber > lastSignaledFrameNumber)
   {
+    externalFrameCount++;
+    
     VkSemaphoreSubmitInfo frameDoneSubmit{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     frameDoneSubmit.semaphore = m_frameConfig.externalMemoryManager->getFrameDoneSemaphore();
-    frameDoneSubmit.value = m_currentExternalFrameNumber;  // Use the same frame number we waited for
+    frameDoneSubmit.value = m_currentExternalFrameNumber;
     frameDoneSubmit.stageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
-    m_app->addSignalSemaphore(frameDoneSubmit);
-    LOGI("Frame %lu: Frame done semaphore added to submit\n", m_currentExternalFrameNumber);
+    
+    LOGI("Frame %lu: Signaling frame done semaphore with value %lu (external frame count: %d, last signaled: %lu)\n", 
+         m_currentExternalFrameNumber, frameDoneSubmit.value, externalFrameCount, lastSignaledFrameNumber);
+    
+    // Double-check we're not signaling a duplicate or out-of-order value
+    if (frameDoneSubmit.value <= lastSignaledFrameNumber) {
+      LOGE("CRITICAL ERROR: Attempting to signal timeline semaphore with value %lu but already signaled %lu!\n", 
+           frameDoneSubmit.value, lastSignaledFrameNumber);
+      LOGE("SKIPPING frame done signal to prevent GPU crash\n");
+    } else {
+      lastSignaledFrameNumber = frameDoneSubmit.value;
+      //m_app->addSignalSemaphore(frameDoneSubmit);
+       m_frameConfig.externalMemoryManager->signalFrameDone(frameDoneSubmit.value,m_app->getQueue(0).queue);
+      LOGI("Frame %lu: Frame done semaphore successfully added to submit\n", m_currentExternalFrameNumber);
+      
+      // Don't clear here as it might be needed for image copy
+    }
+  } else if (m_currentExternalFrameNumber > 0 && m_currentExternalFrameNumber == lastSignaledFrameNumber) {
+    LOGI("Frame %lu: Already signaled, skipping duplicate signal\n", m_currentExternalFrameNumber);
   }
   // but also enqueue waits if there are any
   while(!m_resources.m_queueStates.primary.m_pendingWaits.empty())
