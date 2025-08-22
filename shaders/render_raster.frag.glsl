@@ -104,6 +104,8 @@ layout(early_fragment_tests) in;
 
 void main()
 {
+  
+  return;
   vec3 wNormal;
 
 #if ALLOW_SHADING
@@ -175,4 +177,6 @@ void main()
     atomicMax(readback.clusterTriangleId, packPickingValue(packedClusterTriangleId, gl_FragCoord.z));
     atomicMax(readback.instanceId, packPickingValue(IN.instanceID, gl_FragCoord.z));
   }
+  out_Color = vec4(0.0 ,0.0,0.0,1.0);
+  //out_Color = vec4(gl_FragCoord.z,0.5,0.0,1.0);
 }

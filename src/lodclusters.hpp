@@ -211,6 +211,8 @@ private:
 
   void handleChanges();
 
+
+  
   float decodePickingDepth(const shaderio::Readback& readback);
   bool  isPickingValid(const shaderio::Readback& readback);
 

@@ -27,6 +27,19 @@
 
 namespace lodclusters {
 
+
+const char* vkFormatStr(VkFormat f) {
+  switch (f) {
+    case VK_FORMAT_D24_UNORM_S8_UINT:      return "VK_FORMAT_D24_UNORM_S8_UINT";
+    case VK_FORMAT_D32_SFLOAT_S8_UINT:     return "VK_FORMAT_D32_SFLOAT_S8_UINT";
+    case VK_FORMAT_D16_UNORM_S8_UINT:      return "VK_FORMAT_D16_UNORM_S8_UINT";
+    case VK_FORMAT_D32_SFLOAT:             return "VK_FORMAT_D32_SFLOAT";
+    case VK_FORMAT_X8_D24_UNORM_PACK32:    return "VK_FORMAT_X8_D24_UNORM_PACK32";
+    case VK_FORMAT_D16_UNORM:              return "VK_FORMAT_D16_UNORM";
+    default:                               return "UNKNOWN";
+  }
+}
+
 void Resources::beginFrame(uint32_t cycleIndex)
 {
   m_cycleIndex = cycleIndex;
@@ -387,6 +400,9 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
 
   // depth stencil
   m_frameBuffer.depthStencilFormat = nvvk::findDepthStencilFormat(m_physicalDevice);
+  LOGI("DepthStencil format chosen: %s (%d)\n",
+     vkFormatStr(m_frameBuffer.depthStencilFormat),
+     int(m_frameBuffer.depthStencilFormat));
 
   {
     VkImageCreateInfo dsImageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -399,7 +415,7 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
     dsImageInfo.arrayLayers       = 1;
     dsImageInfo.samples           = samplesUsed;
     dsImageInfo.tiling            = VK_IMAGE_TILING_OPTIMAL;
-    dsImageInfo.usage             = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    dsImageInfo.usage             = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     dsImageInfo.flags             = 0;
     dsImageInfo.initialLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
 

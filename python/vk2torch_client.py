@@ -786,18 +786,11 @@ class VK2TorchClient:
         try:
             # Wait for frame completion
             self.cuda_api.synchronize_stream()
-            start_time = time.time()
             self.cuda_api.wait_semaphore(self.sem_done, self.frame_number)
  
             self.cuda_api.synchronize_stream()
             # return None
-            print("syned")
-            wait_time = (time.time() - start_time) * 1000
-            if wait_time > timeout_ms:
-                logger.warning(f"Frame wait took {wait_time:.1f}ms (timeout: {timeout_ms}ms)")
-                
-            # Create CuPy array from device memory (zero-copy)
-            print("start copy memory")
+
             umem = cp.cuda.UnownedMemory(
                 int(self.dev_color.value), 
                 self.color_readback_bytes, 
@@ -806,16 +799,26 @@ class VK2TorchClient:
             mptr = cp.cuda.MemoryPointer(umem, 0)
             
             # Create properly strided array for row-pitch alignment
-            cupy_array = cp.ndarray(
-                (self.height, self.width, 4),
-                dtype=cp.uint8,
-                memptr=mptr,
-                strides=(self.row_pitch, 4, 1)
-            )
+            # cupy_array = cp.ndarray(
+            #     (self.height, self.width, 4),
+            #     dtype=cp.uint8,
+            #     memptr=mptr,
+            #     strides=(self.row_pitch, 4, 1)
+            # )
+            H, W = self.height, self.width
+
+            raw32 = cp.ndarray((H, W), dtype=cp.uint32, memptr=mptr,
+                            strides=(self.row_pitch, 4))   # (行步长, 像素步长[字节])
+            depth24 = raw32 & 0x00FFFFFF
+            depth01 = depth24.astype(cp.float32) / float(0x00FFFFFF)
+
+            torch_tensor = torch.utils.dlpack.from_dlpack(depth01.toDlpack())
+
             
             # Convert to PyTorch tensor via DLPack (zero-copy)
-            torch_tensor = torch.utils.dlpack.from_dlpack(cupy_array.toDlpack())
-            
+            # torch_tensor = torch.utils.dlpack.from_dlpack(torch_depth.toDlpack())
+            # print(torch_tensor.shape)
+            # print(torch_tensor.sum())
             # Increment frame counter for next frame
             self.frame_number += 1
             # print(torch_tensor)

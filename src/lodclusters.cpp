@@ -160,7 +160,7 @@ LodClusters::LodClusters(const Info& info)
   m_frameConfig.frameConstants.lightMixer = 0.5f;
   m_frameConfig.frameConstants.skyParams  = {};
 
-
+  m_rendererConfig.twoSided = true;
   // 只保留一份场景副本
   m_sceneGridConfig.numCopies = 1;
   // 下面这行可加可不加，反正 numCopies=1 时不起作用
@@ -459,8 +459,6 @@ void LodClusters::onAttach(nvapp::Application* app)
         std::filesystem::absolute(exeDirectoryPath / TARGET_EXE_TO_DOWNLOAD_DIRECTORY),
         // install build
         std::filesystem::absolute(exeDirectoryPath / "resources"),
-
-        //test
     };
 
     // m_sceneFilePath = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
@@ -726,7 +724,7 @@ void LodClusters::handleChanges()
 void LodClusters::onRender(VkCommandBuffer cmd)
 {
 
-  bool verbose = true;
+  bool verbose = false;
   if(m_app->isHeadless())
   {
     // If we have external memory manager and scene is initialized, wait for connection
@@ -779,6 +777,41 @@ void LodClusters::onRender(VkCommandBuffer cmd)
   double time = m_clock.getSeconds();
 
   m_resources.beginFrame(m_app->getFrameCycleIndex());
+
+
+  // 如果当前“已知布局”是 SRV，则把 depth 和 stencil 一次性拉回 DS_ATTACHMENT
+  if (m_resources.m_frameBuffer.imgDepthStencil.descriptor.imageLayout ==
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+  {
+    // printf("this is hit");
+    VkImage img = m_resources.m_frameBuffer.imgDepthStencil.image;
+
+    VkImageMemoryBarrier2 bs[2] = {};
+    // DEPTH: SRV -> DS_ATTACHMENT
+    bs[0].sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    bs[0].srcStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    bs[0].srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    bs[0].dstStageMask  = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT;
+    bs[0].dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    bs[0].oldLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    bs[0].newLayout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    bs[0].image         = img;
+    bs[0].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0,1,0,1};
+
+    // STENCIL: SRV -> DS_ATTACHMENT
+    bs[1]              = bs[0];
+    bs[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = 2;
+    dep.pImageMemoryBarriers    = bs;
+    vkCmdPipelineBarrier2(cmd, &dep);
+
+    // 更新追踪器
+    m_resources.m_frameBuffer.imgDepthStencil.descriptor.imageLayout =
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  }
+
 
   m_frameConfig.windowSize = m_windowSize;
   m_frameConfig.hbaoActive = false;
@@ -1077,15 +1110,21 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     const auto& tex = m_resources.m_frameBuffer.useResolved ?
                         m_resources.m_frameBuffer.imgColorResolved :
                         m_resources.m_frameBuffer.imgColor;
+    VkImageLayout depthKnownLayout =
+        m_resources.m_frameBuffer.imgDepthStencil.descriptor.imageLayout;
 
+    // m_frameConfig.externalMemoryManager->cmdCopyImageToColorBuffer(
+    //     cmd, finalImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 
+    //     tex.extent.width, 
+    //     tex.extent.height
+    // );
+    // 假设你的深度图句柄是 depthImage，当前布局是 DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+    m_frameConfig.externalMemoryManager->cmdCopyDepthToBuffer(
+        cmd, m_resources.m_frameBuffer.imgDepthStencil.image, depthKnownLayout,
+        tex.extent.width, tex.extent.height);
 
-    m_frameConfig.externalMemoryManager->cmdCopyImageToColorBuffer(
-        cmd, finalImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 
-        tex.extent.width, 
-        tex.extent.height
-    );
-    
-
+    m_resources.m_frameBuffer.imgDepthStencil.descriptor.imageLayout =
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
 
 

@@ -91,6 +91,12 @@ public:
                                                         VkImageLayout currentLayout, // 传“真实当前布局”
                                                         uint32_t width, uint32_t height);
 
+  void cmdCopyDepthToBuffer(VkCommandBuffer cmd,
+                            VkImage         depthImage,
+                            VkImageLayout   depthOldLayout,
+                            uint32_t        width,
+                            uint32_t        height,
+                            VkImageLayout   restoreLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
   // Frame counter management
   uint64_t getNextFrameNumber() { 

@@ -585,6 +585,115 @@ bool ExternalMemoryManager::sendHandshakeInfo() {
 #endif
 }
 
+void ExternalMemoryManager::cmdCopyDepthToBuffer(VkCommandBuffer cmd,
+                                                 VkImage         depthImage,
+                                                 VkImageLayout   depthOldLayout,
+                                                 uint32_t        width,
+                                                 uint32_t        height,
+                                                 VkImageLayout   restoreLayout)
+{
+#ifndef _WIN32
+  if (!isConnected()) return;
+
+  // 1) old->TRANSFER_SRC （只切 Depth 面）
+  VkImageMemoryBarrier pre{};
+  pre.sType                           = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  pre.srcAccessMask                   = (depthOldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                                          ? VK_ACCESS_SHADER_READ_BIT
+                                          : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  pre.dstAccessMask                   = VK_ACCESS_TRANSFER_READ_BIT;
+  pre.oldLayout                       = depthOldLayout;  // ★ 真实旧布局
+  pre.newLayout                       = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  pre.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+  pre.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+  pre.image                           = depthImage;
+  pre.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT; // 只操作 depth 面
+  pre.subresourceRange.baseMipLevel   = 0;
+  pre.subresourceRange.levelCount     = 1;
+  pre.subresourceRange.baseArrayLayer = 0;
+  pre.subresourceRange.layerCount     = 1;
+
+  vkCmdPipelineBarrier(cmd,
+                       (depthOldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                         ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                         : VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       0, 0, nullptr, 0, nullptr, 1, &pre);
+
+  // 2) 拷贝 depth 平面到 buffer
+  VkBufferImageCopy region{};
+  region.bufferOffset                    = 0;
+  region.bufferRowLength                 = 0;
+  region.bufferImageHeight               = 0;
+  region.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT;
+  region.imageSubresource.mipLevel       = 0;
+  region.imageSubresource.baseArrayLayer = 0;
+  region.imageSubresource.layerCount     = 1;
+  region.imageOffset                     = {0, 0, 0};
+  region.imageExtent                     = {width, height, 1};
+
+  vkCmdCopyImageToBuffer(cmd,
+                         depthImage,
+                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         m_colorReadbackBuffer,
+                         1, &region);
+
+  // 3a) 恢复 depth 面到 restoreLayout
+  VkImageMemoryBarrier post{};
+  post.sType                           = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  post.srcAccessMask                   = VK_ACCESS_TRANSFER_READ_BIT;
+  post.dstAccessMask                   = (restoreLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                                           ? VK_ACCESS_SHADER_READ_BIT
+                                           : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  post.oldLayout                       = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  post.newLayout                       = restoreLayout;
+  post.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+  post.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+  post.image                           = depthImage;
+  post.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT;
+  post.subresourceRange.baseMipLevel   = 0;
+  post.subresourceRange.levelCount     = 1;
+  post.subresourceRange.baseArrayLayer = 0;
+  post.subresourceRange.layerCount     = 1;
+
+  vkCmdPipelineBarrier(cmd,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       (restoreLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                         ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                         : VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                       0, 0, nullptr, 0, nullptr, 1, &post);
+
+  // 3b) ★关键：若是深度+模板格式，把 STENCIL 面也从 SRV 恢复到 restoreLayout
+  {
+    VkImageMemoryBarrier postStencil{};
+    postStencil.sType                           = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    postStencil.srcAccessMask                   = VK_ACCESS_SHADER_READ_BIT;               // 之前被采样
+    postStencil.dstAccessMask                   = (restoreLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                                                   ? VK_ACCESS_SHADER_READ_BIT
+                                                   : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    postStencil.oldLayout                       = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // ★匹配校验器记忆
+    postStencil.newLayout                       = restoreLayout;
+    postStencil.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+    postStencil.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+    postStencil.image                           = depthImage;
+    postStencil.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_STENCIL_BIT;            // 只操作 stencil
+    postStencil.subresourceRange.baseMipLevel   = 0;
+    postStencil.subresourceRange.levelCount     = 1;
+    postStencil.subresourceRange.baseArrayLayer = 0;
+    postStencil.subresourceRange.layerCount     = 1;
+
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         (restoreLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                           ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                           : VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &postStencil);
+  }
+#endif
+}
+
+
+
 bool ExternalMemoryManager::sendFds(const std::vector<int>& fds) {
 #ifdef _WIN32
   return false;

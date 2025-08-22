@@ -103,7 +103,7 @@ def test_system():
         t_all_start = perf_counter()
         frame = None
         
-        for i in range(0, 10):  
+        for i in range(0, 1000):  
             distance = 4.0 + i * 0.5  
 
             R = np.array([[ 0.98822485,  0.11374114, -0.10234546],
@@ -119,7 +119,7 @@ def test_system():
             H  = 1000
             Cx = W / 2
             Cy = H / 2
-            znear, zfar = 0.001, 1000.0
+            znear, zfar = 0.1, 1000.0
 
 
 
@@ -133,12 +133,16 @@ def test_system():
             print("✅ Camera matrices sent via socket")
 
             frame = client.get_frame(timeout_ms=2000)
-
-            if frame is not None:
-                client.save_frame_png(frame, f"success_test{i}.png")
-                print(f"✅ Frame {i} saved")
-            else:
-                print(f"⚠️ Frame {i} capture failed")
+            # def depth01_to_linear(depth01, znear, zfar):
+            #     # 适用于 Vulkan/D3D 的 0..1 深度（非 reversed-Z）
+            #     return (znear * zfar) / (zfar - depth01 * (zfar - znear))
+            # frame = depth01_to_linear(frame,znear,zfar)
+            # print(frame.sum())
+            # if frame is not None:
+            #     client.save_frame_png(frame, f"success_test{i}.png")
+            #     print(f"✅ Frame {i} saved")
+            # else:
+            #     print(f"⚠️ Frame {i} capture failed")
             
         t_all = perf_counter() - t_all_start
         print(f"Total time for 600 frames: {t_all:.2f}s")
