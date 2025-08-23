@@ -1130,3 +1130,102 @@ class VK2TorchClient:
         
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.disconnect()
+
+
+class Vk2TorchCudaClient:
+    """CUDA client for direct FD import from Vk2TorchApp (no UDS)."""
+    
+    def __init__(self):
+        self.cuda_api = None
+        self.dev_color = None
+        self.ext_mem_color = None
+        self.sem_done = None
+        
+        # Initialize CUDA if available
+        if HAS_CUPY and HAS_TORCH:
+            try:
+                self.cuda_api = CUDADriverAPI()
+                logger.info("Vk2TorchCudaClient: CUDA Driver API initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize CUDA: {e}")
+                self.cuda_api = None
+        else:
+            logger.warning("CuPy/PyTorch not available - CUDA functionality disabled")
+    
+    def import_external_memory_from_fd(self, fd: int, size_bytes: int):
+        """Import external memory from file descriptor."""
+        if not self.cuda_api:
+            raise RuntimeError("CUDA not available")
+        
+        # Import external memory
+        self.ext_mem_color = self.cuda_api.import_external_memory(fd, size_bytes, dedicated=True)
+        
+        # Map buffer
+        buffer_desc = CUDA_EXTERNAL_MEMORY_BUFFER_DESC()
+        buffer_desc.offset = 0
+        buffer_desc.size = size_bytes
+        buffer_desc.flags = 0
+        
+        self.dev_color = CUdeviceptr()
+        err = self.cuda_api.cuda.cuExternalMemoryGetMappedBuffer(
+            ctypes.byref(self.dev_color),
+            self.ext_mem_color,
+            ctypes.byref(buffer_desc)
+        )
+        self.cuda_api.cu_check(err, "cuExternalMemoryGetMappedBuffer")
+        
+        logger.info(f"Imported external memory: fd={fd}, size={size_bytes}, ptr=0x{self.dev_color.value:x}")
+    
+    def import_timeline_semaphore(self, fd: int):
+        """Import timeline semaphore from file descriptor."""
+        if not self.cuda_api:
+            raise RuntimeError("CUDA not available")
+        
+        self.sem_done = self.cuda_api.import_external_semaphore(
+            fd, CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_TIMELINE_SEMAPHORE_FD
+        )
+        logger.info(f"Imported timeline semaphore: fd={fd}")
+    
+    def wait_semaphore(self, value: int):
+        """Wait for timeline semaphore value."""
+        if not self.cuda_api or not self.sem_done:
+            raise RuntimeError("Semaphore not available")
+        
+        self.cuda_api.wait_semaphore(self.sem_done, value)
+        self.cuda_api.synchronize_stream()
+    
+    def get_frame_zero_copy(self, row_pitch: int, H: int, W: int) -> 'torch.Tensor':
+        """Get frame data as zero-copy PyTorch tensor."""
+        if not self.cuda_api or not self.dev_color:
+            raise RuntimeError("External memory not available")
+        
+        if not HAS_CUPY or not HAS_TORCH:
+            raise RuntimeError("CuPy or PyTorch not available")
+        
+        # Create CuPy array from device pointer
+        umem = cp.cuda.UnownedMemory(
+            int(self.dev_color.value),
+            H * row_pitch,  # Total size 
+            owner=None
+        )
+        mptr = cp.cuda.MemoryPointer(umem, 0)
+        
+        # Create raw uint32 array with proper strides for row pitch
+        raw32 = cp.ndarray(
+            (H, W), 
+            dtype=cp.uint32, 
+            memptr=mptr,
+            strides=(row_pitch, 4)  # (row_pitch_bytes, bytes_per_pixel)
+        )
+        
+        # Convert to int32 view for PyTorch compatibility
+        raw_i32 = raw32.view(cp.int32)
+        
+        # Zero-copy to PyTorch
+        t_i32 = torch.from_dlpack(raw_i32)
+        
+        # Apply mask and normalize (depth channel processing)
+        mask = 0x00FFFFFF
+        torch_tensor = (t_i32 & mask).to(torch.float32) * (1.0 / 16777215.0)
+        
+        return torch_tensor

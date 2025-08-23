@@ -150,6 +150,57 @@ bool ExternalMemoryManager::init(VkDevice device, VkPhysicalDevice physicalDevic
   return true;
 }
 
+bool ExternalMemoryManager::initInProcess(VkDevice device, VkPhysicalDevice physicalDevice, const ExternalMemoryConfig& config) {
+  m_device = device;
+  m_physicalDevice = physicalDevice;
+  m_config = config;
+  m_inProcessMode = true;
+  
+  if (!m_config.enabled) {
+    return true;
+  }
+
+  LOGI("Initializing External Memory Manager in in-process mode\n");
+
+  // Check if required extensions are supported
+  for (const auto& ext : getRequiredDeviceExtensions()) {
+    if (!checkExtensionSupport(ext)) {
+      LOGE("Required extension %s not supported\n", ext);
+      return false;
+    }
+  }
+
+  // Create depth readback buffer using export depth format
+  uint32_t pixelSize = 4; // R32_UINT = 4 bytes per pixel
+  VkDeviceSize depthBufferSize = m_config.width * m_config.height * pixelSize;
+  
+  // Calculate row pitch (aligned to 256 bytes as per common driver requirements)
+  auto align_up = [](uint32_t v, uint32_t a){ return (v + a - 1) & ~(a - 1); };
+  m_actualRowPitch = align_up(m_config.width * pixelSize, 256);
+  depthBufferSize = m_actualRowPitch * m_config.height;
+
+  LOGI("Creating depth readback buffer (size: %zu bytes, row pitch: %u)\n", depthBufferSize, m_actualRowPitch);
+  if (!createExportableBuffer(depthBufferSize,
+                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                              &m_depthReadbackBuffer, &m_depthReadbackMemory, &m_depthBufferFd, 
+                              &m_depthBufferSize, &m_depthBufferDedicated)) {
+    LOGE("Failed to create depth readback buffer\n");
+    return false;
+  }
+  LOGI("  Actual allocated size: %zu bytes (dedicated: %s)\n", 
+       m_depthBufferSize, m_depthBufferDedicated ? "yes" : "no");
+
+  // Create timeline semaphore for frame synchronization
+  LOGI("Creating frame done timeline semaphore\n");
+  if (!createExportableTimelineSemaphore(&m_frameDoneSemaphore, 0, &m_frameDoneSemaphoreFd)) {
+    LOGE("Failed to create frame done timeline semaphore\n");
+    return false;
+  }
+
+  LOGI("External Memory Manager initialized in in-process mode successfully\n");
+  return true;
+}
+
 void ExternalMemoryManager::deinit() {
   if (m_device == VK_NULL_HANDLE) return;
   
@@ -201,6 +252,14 @@ void ExternalMemoryManager::deinit() {
     vkFreeMemory(m_device, m_colorReadbackMemory, nullptr);
     m_colorReadbackMemory = VK_NULL_HANDLE;
   }
+  if (m_depthReadbackBuffer != VK_NULL_HANDLE) {
+    vkDestroyBuffer(m_device, m_depthReadbackBuffer, nullptr);
+    m_depthReadbackBuffer = VK_NULL_HANDLE;
+  }
+  if (m_depthReadbackMemory != VK_NULL_HANDLE) {
+    vkFreeMemory(m_device, m_depthReadbackMemory, nullptr);
+    m_depthReadbackMemory = VK_NULL_HANDLE;
+  }
   if (m_cameraSemaphore != VK_NULL_HANDLE) {
     vkDestroySemaphore(m_device, m_cameraSemaphore, nullptr);
     m_cameraSemaphore = VK_NULL_HANDLE;
@@ -209,6 +268,18 @@ void ExternalMemoryManager::deinit() {
     vkDestroySemaphore(m_device, m_frameDoneSemaphore, nullptr);
     m_frameDoneSemaphore = VK_NULL_HANDLE;
   }
+  
+  // Close in-process mode file descriptors  
+#ifndef _WIN32
+  if (m_depthBufferFd >= 0) {
+    close(m_depthBufferFd);
+    m_depthBufferFd = -1;
+  }
+  if (m_frameDoneSemaphoreFd >= 0) {
+    close(m_frameDoneSemaphoreFd);
+    m_frameDoneSemaphoreFd = -1;
+  }
+#endif
 
   m_device = VK_NULL_HANDLE;
   m_physicalDevice = VK_NULL_HANDLE;
@@ -1431,6 +1502,67 @@ bool ExternalMemoryManager::ReadCamera32f(float out[32]) {
   LOGE("ReadCamera32f: Failed to get consistent read after 100 retries\n");
   return false;
 #endif
+}
+
+// In-process mode API implementations
+int ExternalMemoryManager::exportDepthBufferFdDup() const {
+#ifdef _WIN32
+  LOGE("In-process mode not supported on Windows\n");
+  return -1;
+#else
+  if (!m_inProcessMode) {
+    LOGE("exportDepthBufferFdDup: Not initialized in in-process mode\n");
+    return -1;
+  }
+  if (m_depthBufferFd < 0) {
+    LOGE("exportDepthBufferFdDup: Depth buffer FD not available\n");
+    return -1;
+  }
+  int dupFd = dup(m_depthBufferFd);
+  if (dupFd < 0) {
+    LOGE("exportDepthBufferFdDup: Failed to dup FD: %s\n", strerror(errno));
+    return -1;
+  }
+  return dupFd;
+#endif
+}
+
+int ExternalMemoryManager::exportFrameDoneSemaphoreFdDup() const {
+#ifdef _WIN32
+  LOGE("In-process mode not supported on Windows\n");
+  return -1;
+#else
+  if (!m_inProcessMode) {
+    LOGE("exportFrameDoneSemaphoreFdDup: Not initialized in in-process mode\n");
+    return -1;
+  }
+  if (m_frameDoneSemaphoreFd < 0) {
+    LOGE("exportFrameDoneSemaphoreFdDup: Frame done semaphore FD not available\n");
+    return -1;
+  }
+  int dupFd = dup(m_frameDoneSemaphoreFd);
+  if (dupFd < 0) {
+    LOGE("exportFrameDoneSemaphoreFdDup: Failed to dup FD: %s\n", strerror(errno));
+    return -1;
+  }
+  return dupFd;
+#endif
+}
+
+uint32_t ExternalMemoryManager::rowPitchBytes() const {
+  if (!m_inProcessMode) {
+    LOGE("rowPitchBytes: Not initialized in in-process mode\n");
+    return 0;
+  }
+  return m_actualRowPitch;
+}
+
+VkExtent2D ExternalMemoryManager::extent() const {
+  return {m_config.width, m_config.height};
+}
+
+VkSemaphore ExternalMemoryManager::timelineSemaphore() const {
+  return m_frameDoneSemaphore;
 }
 
 } // namespace lodclusters

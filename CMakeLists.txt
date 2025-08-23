@@ -16,6 +16,13 @@ find_package(Threads REQUIRED)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 set(CMAKE_CXX_STANDARD 20)
 
+# RPATH settings to avoid conda library conflicts
+set(CMAKE_SKIP_RPATH OFF)
+set(CMAKE_BUILD_WITH_INSTALL_RPATH OFF)
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+set(CMAKE_INSTALL_RPATH "/usr/lib/x86_64-linux-gnu")
+set(CMAKE_BUILD_RPATH "/usr/lib/x86_64-linux-gnu")
+
 #####################################################################################
 # Download the default scene
 download_files(FILENAMES bunny_v2.zip EXTRACT)
@@ -33,6 +40,15 @@ endif()
 file(GLOB SOURCE_FILES src/*.*)
 list(FILTER SOURCE_FILES EXCLUDE REGEX "dlss*")
 
+# Add VMA implementation file
+list(APPEND SOURCE_FILES src/thirdparty/vma_impl.cpp)
+
+# Add core files
+file(GLOB CORE_FILES src/core/*.*)
+
+# Add pybridge files
+file(GLOB PYBRIDGE_FILES src/pybridge/*.*)
+
 file(GLOB SHADER_FILES shaders/*.glsl shaders/*.h)
 file(GLOB VK_RADIX_SORT_FILES thirdparty/vulkan_radix_sort/src/vk_radix_sort.cc)
 
@@ -43,7 +59,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/vulkan_radix_sort/inc
 # Executable
 #
 
-add_executable(${PROJECT_NAME} ${SOURCE_FILES} ${SHADER_FILES} ${VK_RADIX_SORT_FILES})
+add_executable(${PROJECT_NAME} ${SOURCE_FILES} ${CORE_FILES} ${PYBRIDGE_FILES} ${SHADER_FILES} ${VK_RADIX_SORT_FILES})
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -57,6 +73,9 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
   cgltf
   Threads::Threads
 )
+
+# Force static linking of standard libraries to reduce conda conflicts
+target_link_options(${PROJECT_NAME} PRIVATE -static-libstdc++ -static-libgcc)
 
 #####################################################################################
 # Adding DLSS if selected
@@ -127,4 +146,84 @@ copy_to_runtime_and_install( ${PROJECT_NAME}
     LOCAL_DIRS "${CMAKE_CURRENT_LIST_DIR}/shaders"
     AUTO
 )
+
+#####################################################################################
+# Python Extension (vk2torch_ext) - optional
+#
+option(BUILD_PYTHON_EXT "Build Python extension vk2torch_ext" ON)
+
+if(BUILD_PYTHON_EXT)
+  # Find Python and pybind11
+  find_package(Python3 COMPONENTS Interpreter Development)
+  
+  if(Python3_FOUND)
+    # Try to find pybind11
+    find_package(pybind11 QUIET CONFIG)
+    
+    if(NOT pybind11_FOUND)
+      # Try to find pybind11 via Python
+      execute_process(
+        COMMAND ${Python3_EXECUTABLE} -c "import pybind11; print(pybind11.get_include())"
+        OUTPUT_VARIABLE PYBIND11_INCLUDE_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE PYBIND11_RESULT
+      )
+      
+      if(PYBIND11_RESULT EQUAL 0)
+        message(STATUS "Found pybind11 via Python at: ${PYBIND11_INCLUDE_DIR}")
+        
+        # Manually setup pybind11
+        include_directories(${PYBIND11_INCLUDE_DIR})
+        
+        # Create Python extension module
+        add_library(vk2torch_ext MODULE src/pybind/vk2torch_ext.cpp)
+        
+        # Link minimal required libraries (avoid PIC issues)
+        target_link_libraries(vk2torch_ext PRIVATE
+          ${Python3_LIBRARIES}
+          Threads::Threads
+        )
+        
+        # Set module properties
+        set_target_properties(vk2torch_ext PROPERTIES
+          PREFIX ""
+          OUTPUT_NAME "vk2torch_ext"
+          CXX_VISIBILITY_PRESET hidden
+          VISIBILITY_INLINES_HIDDEN ON
+        )
+        
+        # Add compile definitions
+        target_compile_definitions(vk2torch_ext PRIVATE VERSION_INFO="dev")
+        target_compile_definitions(vk2torch_ext PRIVATE PYBIND11_MODULE)
+        
+        message(STATUS "vk2torch_ext Python extension will be built")
+        
+      else()
+        message(WARNING "pybind11 not found - skipping Python extension")
+      endif()
+    else()
+      message(STATUS "Found pybind11 CONFIG")
+      
+      # Create Python extension module using pybind11 facilities
+      pybind11_add_module(vk2torch_ext src/pybind/vk2torch_ext.cpp)
+      
+      # Link minimal required libraries (avoid PIC issues)
+      target_link_libraries(vk2torch_ext PRIVATE
+        ${Python3_LIBRARIES}
+        Threads::Threads
+      )
+      
+      # Set module properties
+      set_target_properties(vk2torch_ext PROPERTIES
+        OUTPUT_NAME "vk2torch_ext"
+      )
+      
+      message(STATUS "vk2torch_ext Python extension will be built (using pybind11 CONFIG)")
+    endif()
+  else()
+    message(WARNING "Python3 not found - skipping Python extension")
+  endif()
+else()
+  message(STATUS "Python extension build disabled")
+endif()
 

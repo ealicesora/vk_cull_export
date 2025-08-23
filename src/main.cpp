@@ -26,7 +26,6 @@
   } while(false)
 #endif
 
-#define VMA_IMPLEMENTATION
 
 #if __INTELLISENSE__
 #undef VK_NO_PROTOTYPES
@@ -43,6 +42,7 @@
 #include <nvutils/parameter_parser.hpp>
 
 #include "lodclusters.hpp"
+#include "core/context_bootstrap.hpp"
 #include "scene.hpp"
 #include "external_memory.hpp"
 #include <filesystem>
@@ -59,40 +59,15 @@ int main(int argc, char** argv)
   appInfo.vSync = false;  // Disable VSync by default for better performance
 
   appInfo.windowSize = {1000,1000};
-  appInfo.headless = true;
+  appInfo.headless = false;  // Will be set later based on offscreen/uds flags
   appInfo.headlessFrameCount = 100000;  // Increased for testing socket communication
 
-  VkPhysicalDeviceMeshShaderFeaturesNV meshNV = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_NV};
-  VkPhysicalDeviceAccelerationStructureFeaturesKHR accKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
-  VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
-  VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR rayPosKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR};
-  VkPhysicalDeviceRayQueryFeaturesKHR rayQueryKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
-  VkPhysicalDeviceClusterAccelerationStructureFeaturesNV clustersNV = {
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV};
-  VkPhysicalDeviceShaderClockFeaturesKHR clockKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR};
-  VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloatFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
-  VkPhysicalDeviceFragmentShadingRateFeaturesKHR shadingRateFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR};
-  VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR barycentricFeatures{
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR};
-
+  // Basic Vulkan setup info (full setup moved to bootstrap)
   nvvk::ContextInitInfo vkSetup{
       .instanceExtensions = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME},
       .deviceExtensions   = {{VK_KHR_SWAPCHAIN_EXTENSION_NAME}},
       .queues             = {VK_QUEUE_GRAPHICS_BIT, VK_QUEUE_TRANSFER_BIT},
   };
-  vkSetup.deviceExtensions.push_back({VK_NV_MESH_SHADER_EXTENSION_NAME, &meshNV});
-  vkSetup.deviceExtensions.push_back({VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME, nullptr, false});
-  vkSetup.deviceExtensions.push_back({VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME, &accKHR, false});
-  vkSetup.deviceExtensions.push_back({VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, &rayKHR, false});
-  vkSetup.deviceExtensions.push_back({VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME, &rayPosKHR, false});
-  vkSetup.deviceExtensions.push_back({VK_KHR_RAY_QUERY_EXTENSION_NAME, &rayQueryKHR, false});
-  // set to version 2 compatibility instead of VK_NV_CLUSTER_ACCELERATION_STRUCTURE_SPEC_VERSION to cover more drivers
-  vkSetup.deviceExtensions.push_back({VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME, &clustersNV, false, 2});
-  vkSetup.deviceExtensions.push_back({VK_KHR_SHADER_CLOCK_EXTENSION_NAME, &clockKHR, false});
-  vkSetup.deviceExtensions.push_back({VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, &atomicFloatFeatures, false});
-  vkSetup.deviceExtensions.push_back({VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME, &shadingRateFeatures, false});
-  vkSetup.deviceExtensions.push_back({VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME, &barycentricFeatures, false});
-  vkSetup.deviceExtensions.push_back({VK_NV_SHADER_SUBGROUP_PARTITIONED_EXTENSION_NAME, nullptr, false});
 
   nvutils::ProfilerManager                    profilerManager;
   std::shared_ptr<nvutils::CameraManipulator> cameraManipulator = std::make_shared<nvutils::CameraManipulator>();
@@ -135,14 +110,9 @@ int main(int argc, char** argv)
       udsPath = "/tmp/vk2torch.sock";
     }
   }
-
-  // Add external memory extensions if UDS is enabled
-  if (enableUDS) {
-    LOGI("Enabling external memory extensions for Python integration\n");
-    for (const auto& ext : ExternalMemoryManager::getRequiredDeviceExtensions()) {
-      vkSetup.deviceExtensions.push_back({ext, nullptr, false});
-    }
-  }
+  
+  // Set headless mode based on offscreen flag or UDS path
+  appInfo.headless = offscreen || !udsPath.empty();
 
   // Check if we're in processing-only mode to skip Vulkan initialization
   
@@ -219,66 +189,16 @@ int main(int argc, char** argv)
     return success ? 0 : -1;
   }
 
-  nvvk::ValidationSettings validationSettings;
-  if(vkSetup.enableValidationLayers)
-  {
-    validationSettings.message_id_filter = {"VUID-RuntimeSpirv-storageInputOutput16-06334", "VUID-VkShaderModuleCreateInfo-pCode-08740"};
-
-    vkSetup.instanceCreateInfoExt = validationSettings.buildPNextChain();
-  }
-
-  nvvk::addSurfaceExtensions(vkSetup.instanceExtensions);
-  nvvk::Context vkContext;
-
-  // Initialize the Vulkan loader
-  NVVK_CHECK(volkInitialize());
-
-  {
-    nvutils::ScopedTimer st("Creating Vulkan Context");
-
-
-  #if USE_DLSS
-    // Adding the DLSS extensions to the instance
-    static std::vector<VkExtensionProperties> extraInstanceExtensions;
-    DlssRayReconstruction::getRequiredInstanceExtensions({}, extraInstanceExtensions);
-    for(auto& ext : extraInstanceExtensions)
-    {
-      vkSetup.instanceExtensions.emplace_back(ext.extensionName);
-    }
-  #endif
-    VkResult result{};
-
-    vkContext.contextInfo = vkSetup;
-
-    result = vkContext.createInstance();
-    result = vkContext.selectPhysicalDevice();
-
-  #if USE_DLSS
-    // Adding the extra device extensions required by DLSS
-    static std::vector<VkExtensionProperties> extraDeviceExtensions;
-    DlssRayReconstruction::getRequiredDeviceExtensions({}, vkContext.getInstance(), vkContext.getPhysicalDevice(), extraDeviceExtensions);
-    for(auto& ext : extraDeviceExtensions)
-    {
-      vkContext.contextInfo.deviceExtensions.push_back({.extensionName = ext.extensionName, .specVersion = ext.specVersion});
-    }
-  #endif
-
-    result = vkContext.createDevice();
-    NVVK_CHECK(result);
-
-    nvvk::DebugUtil::getInstance().init(vkContext.getDevice());
-
-
-    if(vkContext.contextInfo.verbose)
-    {
-      NVVK_CHECK(nvvk::Context::printVulkanVersion());
-      NVVK_CHECK(nvvk::Context::printInstanceLayers());
-      NVVK_CHECK(nvvk::Context::printInstanceExtensions(vkContext.contextInfo.instanceExtensions));
-      NVVK_CHECK(nvvk::Context::printDeviceExtensions(vkContext.getPhysicalDevice(), vkContext.contextInfo.deviceExtensions));
-      NVVK_CHECK(nvvk::Context::printGpus(vkContext.getInstance(), vkContext.getPhysicalDevice()));
-      LOGI("_________________________________________________\n");
-    }
-  }
+  // Create Vulkan context using bootstrap
+  core::BootstrapConfig bootstrapConfig;
+  // Unified condition: needInterop = offscreen || !udsPath.empty() || inProcessInterop
+  bool needInterop = offscreen || !udsPath.empty();  // main() criteria for external interop
+  bootstrapConfig.needExternalInterop = needInterop;
+  bootstrapConfig.forcedGpuIndex = vkSetup.forceGPU;
+  bootstrapConfig.enableValidation = vkSetup.enableValidationLayers;
+  
+  core::BootstrapResult bootstrapResult = core::createVulkanContext(bootstrapConfig);
+  nvvk::Context& vkContext = bootstrapResult.ctx;
 
   sampleElement->setSupportsClusters(vkContext.hasExtensionEnabled(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME));
 

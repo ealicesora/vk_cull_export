@@ -21,6 +21,7 @@
 cmake_built
 cmake_build
 build/
+build-*/
 build_*/
 _bin/
 _install/
@@ -39,8 +40,12 @@ _downloaded_resources/
 
 # Log files
 *.log
+*.txt
 output.log
 test_progress.log
+debug_*.log
+vulkan*.log
+python*.log
 
 # Temporary files
 *.tmp
@@ -55,6 +60,39 @@ test_progress.log
 
 # Generated files
 zbsgfxpack.lua
+
+# Python compiled modules and extensions
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+*.egg-info/
+dist/
+.eggs/
+
+# Python extension modules
+vk2torch_ext.cpython-*.so
+*.cpython-*.so
+
+# Test output files
+*.png
+success_test*.png
+test_*.png
+frame_*.png
+
+# Shell scripts output
+test_vk2torch.sh
+test_*.sh
+
+# CMake generated files  
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+Makefile
+*.make
 
 # Scene files (optional - uncomment if you don't want to track them)
 # *.glb

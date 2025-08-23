@@ -6,8 +6,49 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Primary Build Commands
 
-#### Successful Build Process (Tested 2025-08-20)
+#### Recommended Build Process (Updated 2025-08-24)
+
+**🎯 For Python Extension Development (BEST METHOD):**
 ```bash
+# Step 1: Use sophisticated toolchain approach (separates conda Python from system C++)
+# This method builds Python extensions successfully without GLIBC conflicts
+
+# IMPORTANT: Keep conda environment ACTIVE (needed for Python/pybind11)
+conda activate vk2torch
+
+# Clean previous build
+rm -rf build-py
+
+# Configure with toolchain file (uses system GCC-10, conda Python)
+cmake -S . -B build-py \
+  -DCMAKE_TOOLCHAIN_FILE=toolchains/system_no_conda.cmake \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DPython3_EXECUTABLE="$HOME/anaconda3/envs/vk2torch/bin/python" \
+  -DCMAKE_PREFIX_PATH="$HOME/VulkanSDK/1.4.321.1/x86_64" \
+  -DUSE_DLSS=OFF \
+  -DBUILD_PYTHON_EXT=ON
+
+# Apply required patch (only needed once after configure)
+# Edit: build-py/_deps/nvpro_core2/nvutils/logger.cpp
+# After line 38 (#include <signal.h>), add:
+#   #include <unistd.h>
+
+# Build (Python extension will be created)
+cmake --build build-py --config Release -j4
+
+# Result: build-py/vk2torch_ext.cpython-310-x86_64-linux-gnu.so
+# Test: cd build-py && python -c "import vk2torch_ext; print('✅ Success!')"
+```
+
+**🎯 For Main Application (Vulkan App):**
+```bash
+# Option 1: Clean environment build (most reliable for main app)
+./build_clean.sh
+
+# Option 2: Conda-compatible build (if conda must be used)
+./build_conda_fix.sh
+
+# Option 3: Manual build with clean environment
 # IMPORTANT: Deactivate conda environment if active to avoid GLIBC conflicts
 conda deactivate
 
@@ -89,12 +130,33 @@ g++-10 --version
 - **RAM**: 8GB+ (16GB+ recommended for large scenes)
 - **Storage**: ~2GB for build artifacts
 
+### Toolchain System for Mixed Environments
+
+**The Problem:** Building Python extensions in conda environments with VulkanSDK causes GLIBC version conflicts.
+
+**The Solution:** Use CMake toolchain files to separate system C++ compilation from conda Python environments:
+
+```bash
+# Key files:
+# toolchains/system_no_conda.cmake - Forces system compilers, ignores conda paths
+# CMakeLists.txt - Supports pybind11 Python extension building
+```
+
+**Architecture:**
+- **System compilers** (GCC-10): For C++ compilation, avoids conda GLIBC conflicts
+- **Conda Python**: For pybind11 integration and Python module creation
+- **Toolchain isolation**: Prevents conda cross-compilation toolchain contamination
+
+**Result:** Python extensions build successfully while maintaining conda environment for testing.
+
 ### Common Build Issues and Solutions
 1. **C++20 Compilation Errors**: Ensure using GCC 10+, try explicit compiler selection if needed
 2. **Multiple compiler versions**: Use `CC=gcc-12 CXX=g++-12` to specify version
 3. **Missing pthread symbols**: Already fixed in CMakeLists.txt with `Threads::Threads`
 4. **Extension not available**: Ray tracing extensions are optional for non-RTX GPUs
 5. **Out of memory during processing**: Use `--processingonly 1` and `--processingthreadpct 0.1`
+6. **🆕 GLIBC conflicts in conda**: Use toolchain approach for Python extension development
+7. **🆕 Python extension build failures**: Ensure using `conda activate vk2torch` + toolchain file
 
 ### Dependencies
 - Requires Vulkan SDK 1.4.309.0 or later
@@ -143,6 +205,9 @@ ldd _bin/Release/vk_lod_clusters
 - **Scene Management**: `Scene` class handles 3D model loading, cluster generation, and geometry processing
 - **Rendering**: Dual rendering paths for rasterization (`RendererRasterClustersLod`) and ray tracing (`RendererRayTraceClustersLod`)
 - **Resources**: `Resources` class manages Vulkan resources, buffers, and memory allocation
+- **Context Bootstrap**: `core::BootstrapResult createVulkanContext()` in `src/core/context_bootstrap.*` - centralized Vulkan initialization
+- **External Memory Integration**: `ExternalMemoryManager` in `src/external_memory.*` - handles Python/CUDA interop via FD export
+- **PyBridge Element**: `ElementPyBridge` in `src/pybridge/element_pybridge.*` - nvapp::IAppElement for in-process Python integration
 
 ### Key Technologies
 - **NVIDIA RTX Mega Geometry**: Implements continuous level of detail using mesh clusters
@@ -263,15 +328,24 @@ ldd _bin/Release/vk_lod_clusters
 - **Out of memory during build**: Use fewer parallel jobs: `cmake --build build -j4`
 - **Compiler version conflicts**: Explicitly set compiler with `CC=gcc-12 CXX=g++-12 cmake ...`
 
+### Build Scripts Available
+- **`./build_clean.sh`**: Clean environment build with aggressive conda isolation
+- **`./build_conda_fix.sh`**: Conda-compatible build using system libraries and static linking
+- Both scripts automatically handle VulkanSDK detection and clean environment setup
+
 ### Known Build Patches Needed
 1. **nvpro_core2 logger.cpp**: Add `#include <unistd.h>` after `#include <signal.h>` in the Unix section
    - Location: `build/_deps/nvpro_core2/nvutils/logger.cpp` around line 38-39
    - Error: `'isatty' was not declared in this scope`
    - Solution: Insert `#include <unistd.h>` after line with `#include <signal.h>`
-2. **Anaconda conflicts**: Deactivate conda environment if encountering GLIBC linking errors
-   - Use `conda deactivate` before building
-   - Set clean PATH environment: `PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"`
-   - Errors: `undefined reference to log2@GLIBC_2.29`, `__clock_getres@GLIBC_PRIVATE`
+2. **VMA ODR Violation Prevention**: 
+   - **Status**: ✅ **FIXED** - VMA_IMPLEMENTATION centralized in `src/thirdparty/vma_impl.cpp`
+   - All other files have VMA_IMPLEMENTATION removed to prevent duplicate symbols
+3. **Conda/VulkanSDK GLIBC Conflicts**: 
+   - **Symptoms**: `undefined reference to log2@GLIBC_2.29`, `__clock_getres@GLIBC_PRIVATE`
+   - **Root Cause**: VulkanSDK libraries compiled against newer GLIBC than conda provides
+   - **Solutions**: Use provided build scripts which handle environment isolation
+   - **Manual Fix**: Use `conda deactivate` and clean PATH: `PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"`
 
 ### Runtime Issues
 - **Crash on startup**: Use `--renderer 0 --validation 0` for maximum compatibility
@@ -293,6 +367,10 @@ The codebase includes a **production-ready** Python integration system that enab
 
 ### Architecture Components
 - **ExternalMemoryManager** (`src/external_memory.*`): Manages Vulkan external memory resources, timeline semaphores, and UDS communication
+  - **UDS Mode**: Traditional Unix Domain Socket communication with FD passing 
+  - **In-Process Mode**: `initInProcess()` for direct pybind11 integration with `exportDepthBufferFdDup()` and `exportFrameDoneSemaphoreFdDup()`
+- **PyBridge Element** (`src/pybridge/element_pybridge.*`): nvapp::IAppElement for in-process camera control and frame synchronization
+- **pybind11 Extension** (`build-py/vk2torch_ext.cpython-*.so`): Built with toolchain approach, provides `VkLodBridge` class for direct Python integration
 - **Python Clients**: 
   - `python/vk2torch_client.py`: Original working client with graceful fallbacks
   - `python/vk2torch_client_strict_fixed.py`: **PRODUCTION CLIENT** - Strict CUDA v1 compliant with mandatory dependencies
@@ -349,6 +427,32 @@ if client.connect():
     for i in range(3):
         frame = client.get_frame(timeout_ms=2000)
         print(f'Frame {i+1}: {frame.shape if frame is not None else \"timeout\"}')"
+```
+
+### Python Extension Building (NEW - Toolchain Method)
+```bash
+# BEST METHOD: Use toolchain approach for reliable Python extension building
+# This method successfully separates conda Python from system C++ compilation
+
+# Keep conda environment active (needed for pybind11)
+conda activate vk2torch
+
+# Build Python extension with toolchain isolation
+rm -rf build-py
+cmake -S . -B build-py \
+  -DCMAKE_TOOLCHAIN_FILE=toolchains/system_no_conda.cmake \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DPython3_EXECUTABLE="$HOME/anaconda3/envs/vk2torch/bin/python" \
+  -DCMAKE_PREFIX_PATH="$HOME/VulkanSDK/1.4.321.1/x86_64" \
+  -DUSE_DLSS=OFF \
+  -DBUILD_PYTHON_EXT=ON
+
+# Apply nvpro_core2 logger patch (add #include <unistd.h> after #include <signal.h>)
+# Then build:
+cmake --build build-py --config Release -j4
+
+# Test the extension
+cd build-py && python -c "import vk2torch_ext; print('✅ Success! Available:', dir(vk2torch_ext))"
 ```
 
 ### Python Environment Setup
@@ -434,6 +538,14 @@ The Python integration implements a **zero-copy GPU-to-GPU pipeline**:
 - **Shader-Host Communication**: Data structures in `shaders/shaderio_*.h` define shared interfaces between host C++ and device GLSL code
 - **Scene Polymorphism**: `Scene` base class with `ScenePreloaded` and `SceneStreaming` implementations for different memory management strategies
 - **External Integration**: `ExternalMemoryManager` can be optionally integrated via `FrameConfig::externalMemoryManager` pointer
+- **Bootstrap Pattern**: Vulkan context creation centralized in `core::createVulkanContext()` to avoid code duplication
+- **Element Architecture**: All UI and integration components inherit from `nvapp::IAppElement` (onAttach/onDetach/onRender lifecycle)
+- **Memory Management**: VMA (Vulkan Memory Allocator) implementation centralized in `src/thirdparty/vma_impl.cpp` to prevent ODR violations
+- **Directory Structure**: 
+  - `src/core/`: Core infrastructure (bootstrap, context management)
+  - `src/pybridge/`: Python integration elements and bridges
+  - `src/pybind/`: pybind11 extension module implementation
+  - `src/thirdparty/`: Third-party library implementations (VMA, etc.)
 
 ### Testing Strategy
 - **Unit Tests**: Individual component tests in `python/test_*.py` for isolated functionality

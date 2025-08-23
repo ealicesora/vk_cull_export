@@ -46,6 +46,9 @@ struct ExternalMemoryConfig {
   uint32_t width = 1920;
   uint32_t height = 1080;
   VkFormat format = VK_FORMAT_D24_UNORM_S8_UINT;
+  // New in-process mode support:
+  VkFormat exportDepthFormat = VK_FORMAT_R32_UINT;  // 24→32bit packed depth
+  bool     pack24In32 = true;                       // Python side uses &0x00FFFFFF
 };
 
 class ExternalMemoryManager {
@@ -55,6 +58,14 @@ public:
 
   bool init(VkDevice device, VkPhysicalDevice physicalDevice, const ExternalMemoryConfig& config);
   void deinit();
+
+  // In-process mode (no UDS socket communication)
+  bool initInProcess(VkDevice device, VkPhysicalDevice physicalDevice, const ExternalMemoryConfig& config);
+  int  exportDepthBufferFdDup() const;        // Returns dup(fd) for safe transfer
+  int  exportFrameDoneSemaphoreFdDup() const; // Returns dup(fd) for safe transfer
+  uint32_t rowPitchBytes() const;              // Real row pitch for CuPy strides
+  VkExtent2D extent() const;                   // Image extent
+  VkSemaphore timelineSemaphore() const;       // Timeline semaphore handle
 
   // Create exportable resources
   bool createExportableBuffer(VkDeviceSize size, VkBufferUsageFlags usage, 
@@ -153,6 +164,12 @@ private:
   VkBuffer m_colorReadbackBuffer = VK_NULL_HANDLE;
   VkDeviceMemory m_colorReadbackMemory = VK_NULL_HANDLE;
   
+  // Depth buffer for in-process mode  
+  VkBuffer m_depthReadbackBuffer = VK_NULL_HANDLE;
+  VkDeviceMemory m_depthReadbackMemory = VK_NULL_HANDLE;
+  VkDeviceSize m_depthBufferSize = 0;
+  bool m_depthBufferDedicated = false;
+  
   VkSemaphore m_cameraSemaphore = VK_NULL_HANDLE;
   VkSemaphore m_frameDoneSemaphore = VK_NULL_HANDLE;
 
@@ -178,6 +195,12 @@ private:
   
   // Frame counter for window mode protocol
   uint64_t m_currentFrameNumber = 1;
+  
+  // In-process mode file descriptors (stored for dup() export)
+  int m_depthBufferFd = -1;
+  int m_frameDoneSemaphoreFd = -1;
+  uint32_t m_actualRowPitch = 0;  // Actual row pitch in bytes
+  bool m_inProcessMode = false;   // Track if initialized in in-process mode
   
   // Shared memory for camera matrices
   int m_shmFd = -1;
