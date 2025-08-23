@@ -25,6 +25,7 @@ import numpy as np
 from typing import Optional, Tuple, Dict, Any
 import logging
 import struct, numpy as np, socket
+from multiprocessing import shared_memory
 
 
 # Setup logging
@@ -397,7 +398,6 @@ class CUDADriverAPI:
         result = self.cuda.cuImportExternalSemaphore(ctypes.byref(ext_sem), ctypes.byref(desc))
         if result != CUDA_SUCCESS:
             raise RuntimeError(f"cuImportExternalSemaphore failed: {result}")
-        print('succeed')
         return ext_sem
         
 
@@ -433,7 +433,7 @@ class CUDADriverAPI:
         params.params.fence.value = ctypes.c_uint64(value)     # ★ 关键
 
         params.flags = 0
-        # print("on signal_semaphore" + str(value))
+  
         err = self.cuda.cuSignalExternalSemaphoresAsync(
             (ctypes.c_void_p * 1)(semaphore),
             (CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS * 1)(params),
@@ -444,7 +444,7 @@ class CUDADriverAPI:
         if err != CUDA_SUCCESS:
             self.cu_check(err,"signal_semaphore")
             raise RuntimeError(f"cuSignalExternalSemaphoresAsync failed: {err}")
-        # print("finish signal_semaphore" + str(value))
+
         # self.synchronize_stream(stream)
 
     def wait_semaphore(self, semaphore: ctypes.c_void_p, value: int, stream: Optional[ctypes.c_void_p] = None):
@@ -467,7 +467,7 @@ class CUDADriverAPI:
         if result != CUDA_SUCCESS:
             self.cu_check(result,"cuWaitExternalSemaphoresAsync")
             raise RuntimeError(f"cuWaitExternalSemaphoresAsync failed: {result}")
-        # print("wait cuWaitExternalSemaphoresAsync succeed" + str(value))
+       
 
     def synchronize_stream(self, stream: Optional[ctypes.c_void_p] = None):
         """Synchronize CUDA stream."""
@@ -491,9 +491,12 @@ class VK2TorchClient:
         self.socket = None
         self.connected = False
         
-        self._cam_magic = b'CAM1'
-        self._cam_hdr_packer = struct.Struct('<4sI')  # magic[4], frame(u32), 小端
-        self._cam_buf = np.empty(32, dtype=np.float32)  # 复用缓冲: 16(view)+16(proj)
+        # Shared memory for camera matrices
+        self.shm = None
+        self.shm_name = 'py2vk_cam32f'
+        self.shm_size = 256
+        self.shm_seq_offset = 0
+        self.shm_data_offset = 64
 
 
         # Handshake data
@@ -587,7 +590,8 @@ class VK2TorchClient:
             if self.vk_uuid:
                 logger.info(f"Vulkan GPU UUID: {self.vk_uuid}")
             logger.info(f"Dedicated allocation: cam={self.cam_dedicated}, color={self.color_dedicated}")
-            
+            print('sleep for 3s for device to get ready')
+            time.sleep(3)
             # Receive file descriptors
             if not self._receive_fds():
                 return False
@@ -649,7 +653,6 @@ class VK2TorchClient:
 
                     self.sem_cam = self.cuda_api.import_external_semaphore(cam_sem_fd)
                     self.sem_done = self.cuda_api.import_external_semaphore(done_sem_fd)
-                    print('sem_import ok')
                     
                     # Optional: Test semaphore functionality immediately
                     if os.environ.get('VK2TORCH_TEST_SEMAPHORE', '0') == '1':
@@ -725,44 +728,96 @@ class VK2TorchClient:
             logger.error(f"Failed to wait for ready message: {e}")
             return False
             
+    def _init_shared_memory(self) -> bool:
+        """Initialize shared memory for camera matrices."""
+        try:
+            # Try to create new shared memory
+            self.shm = shared_memory.SharedMemory(
+                name=self.shm_name, 
+                create=True, 
+                size=self.shm_size
+            )
+            logger.info(f"Created shared memory: {self.shm_name}")
+            # Initialize with zeros
+            self.shm.buf[:] = b'\x00' * self.shm_size
+        except FileExistsError:
+            # Shared memory already exists, open it
+            try:
+                self.shm = shared_memory.SharedMemory(name=self.shm_name, create=False)
+                logger.info(f"Opened existing shared memory: {self.shm_name}")
+            except FileNotFoundError:
+                logger.error(f"Shared memory {self.shm_name} not found")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to initialize shared memory: {e}")
+            return False
+        
+        return True
+    
+    def _write_camera_to_shm(self, view_matrix: np.ndarray, proj_matrix: np.ndarray) -> bool:
+        """Write camera matrices to shared memory using seqlock protocol."""
+        if not self.shm:
+            return False
+            
+        try:
+            # Combine view and proj matrices into 32 float32 array
+            view_arr = np.asarray(view_matrix, dtype=np.float32).flatten()[:16]
+            proj_arr = np.asarray(proj_matrix, dtype=np.float32).flatten()[:16]
+            
+            if len(view_arr) != 16 or len(proj_arr) != 16:
+                logger.error("View and projection matrices must have 16 elements each")
+                return False
+            
+            camera_data = np.concatenate([view_arr, proj_arr])
+            
+            # Get sequence counter for seqlock protocol
+            seq_view = memoryview(self.shm.buf)[self.shm_seq_offset:self.shm_seq_offset + 8]
+            data_view = memoryview(self.shm.buf)[self.shm_data_offset:self.shm_data_offset + 128]
+            
+            # Read current sequence 
+            seq = struct.unpack('<Q', seq_view)[0]
+            
+            # Step 1: Increment sequence to odd (writing state)
+            seq += 1
+            struct.pack_into('<Q', self.shm.buf, self.shm_seq_offset, seq)
+            
+            # Step 2: Write the data
+            data_view[:] = camera_data.tobytes()
+            
+            # Step 3: Increment sequence to even (stable state)  
+            seq += 1
+            struct.pack_into('<Q', self.shm.buf, self.shm_seq_offset, seq)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to write camera data to shared memory: {e}")
+            return False
 
     def update_camera(self, view_matrix: np.ndarray, proj_matrix: np.ndarray) -> bool:
         if not self.connected:
             return False
         try:
-            # 1) 先按你原逻辑发相机信号量
+            # Initialize shared memory if not already done
+            if not self.shm and not self._init_shared_memory():
+                logger.warning("Shared memory not available - this may cause camera update to fail")
+                return False
+            
+            # Write camera matrices to shared memory using seqlock protocol
+            if not self._write_camera_to_shm(view_matrix, proj_matrix):
+                logger.error("Failed to write camera matrices to shared memory")
+                return False
+            
+            # Signal camera ready via semaphore (maintaining frame sync)
             if self.cuda_api:
                 self.cuda_api.signal_semaphore(self.sem_cam, self.frame_number)
-
-            # # 2) 组头: "CAM1" + frame(u32)
-            # header = self._cam_hdr_packer.pack(self._cam_magic, int(self.frame_number))
-
-            # # 3) 填充 32 个 float32（定长 128B）
-            # vm = np.asarray(view_matrix, dtype=np.float32).reshape(16)
-            # pm = np.asarray(proj_matrix, dtype=np.float32).reshape(16)
-            # self._cam_buf[:16] = vm
-            # self._cam_buf[16:] = pm
-            # payload_mv = memoryview(self._cam_buf).cast('B')  # 128B
-
-            # # 4) 长度前导（header 8B + payload 128B = 136B）
-            # total_len = len(header) + len(payload_mv)
-            # size_bytes = struct.pack('<I', total_len)
-
-            # # 5) 一次发出（优先 sendmsg；不支持则 sendall 三段）
-            # try:
-            #     if hasattr(self.socket, 'sendmsg'):
-            #         self.socket.sendmsg([size_bytes, header, payload_mv])
-            #     else:
-            #         self.socket.sendall(size_bytes)
-            #         self.socket.sendall(header)
-            #         self.socket.sendall(payload_mv)
-            # finally:
-            #     payload_mv.release()
-
-            # logger.info(f"Sent CAM1 camera packet frame={self.frame_number} (136B payload)")
+                # self.frame_number += 1
+            else:
+                logger.warning("CUDA API not available - semaphore signaling disabled")
+            
             return True
         except Exception as e:
-            logger.error(f"Failed to update camera(binary): {e}")
+            logger.error(f"Failed to update camera: {e}")
             return False
 
 
@@ -836,7 +891,136 @@ class VK2TorchClient:
         except Exception as e:
             logger.error(f"Failed to get frame: {e}")
             return None
-            
+
+
+    def save_depth_png(
+        self,
+        depth,                  # torch.Tensor 或 numpy.ndarray，形状可为 (H,W), (1,H,W), (H,W,1)
+        filename: str,
+        *,
+        normalize: bool = True,
+        min_val: float | None = None,
+        max_val: float | None = None,
+        invert: bool = False,           # 若你用 reversed-Z（近=大），想让“近更亮”，可设 True
+        robust_percentile: float = 0.5, # 百分位裁剪，0.5 表示 [0.5%, 99.5%]
+        bitdepth: int = 16              # 16 或 8；建议 16
+    ) -> bool:
+        """
+        将单通道深度保存为 PNG。返回 True/False 表示是否保存成功。
+        - normalize=True 时：用 (min,max) 将深度线性映射到 [0,1]（会先按百分位裁剪减少异常值影响）。
+        - min_val/max_val 可手动覆盖自动范围。
+        - invert=True 则做 1 - x（常用于 reversed-Z: 近=大，想让近=亮）。
+        - bitdepth: 16（推荐）或 8。
+        """
+        try:
+            import numpy as np
+            # 尽量用已存在的环境变量/对象
+            has_cv = globals().get("HAS_OPENCV", False)
+            if has_cv:
+                import cv2
+            else:
+                cv2 = None
+
+            # 1) 拿到 numpy，去掉多余维度
+            if "torch" in str(type(depth)):  # 粗略判断是否为 torch.Tensor
+                # 防止梯度/显存问题
+                depth_np = depth.detach().to("cpu").numpy()
+            else:
+                depth_np = np.asarray(depth)
+
+            # squeeze 到 (H,W)
+            if depth_np.ndim == 3:
+                # 允许 [1,H,W] 或 [H,W,1]
+                if depth_np.shape[0] == 1:
+                    depth_np = depth_np[0]
+                elif depth_np.shape[2] == 1:
+                    depth_np = depth_np[:, :, 0]
+                else:
+                    raise ValueError(f"Depth tensor must be single-channel; got shape {depth_np.shape}")
+            elif depth_np.ndim != 2:
+                raise ValueError(f"Depth tensor must be 2D or single-channel 3D; got ndim={depth_np.ndim}")
+
+            depth_np = np.asanyarray(depth_np).astype(np.float32, copy=False)
+
+            # 2) 处理 NaN/Inf
+            finite_mask = np.isfinite(depth_np)
+            if not np.any(finite_mask):
+                if 'logger' in globals():
+                    logger.error("Depth has no finite values.")
+                return False
+
+            # 3) 计算归一化范围
+            lo, hi = (min_val, max_val)
+            if normalize:
+                vals = depth_np[finite_mask]
+                # 百分位裁剪（减少极端值影响）
+                p = float(robust_percentile)
+                if lo is None:
+                    lo = np.percentile(vals, p) if p > 0 else float(np.min(vals))
+                if hi is None:
+                    hi = np.percentile(vals, 100.0 - p) if p > 0 else float(np.max(vals))
+            else:
+                # 不做归一化就直接 clamp 到 [0,1]
+                lo = 0.0 if lo is None else lo
+                hi = 1.0 if hi is None else hi
+
+            # 防止 lo==hi
+            if hi <= lo:
+                # 退化情况：全图近似常数
+                if 'logger' in globals():
+                    logger.warning(f"Depth range collapsed (lo={lo}, hi={hi}), producing a constant image.")
+                norm = np.zeros_like(depth_np, dtype=np.float32)
+            else:
+                norm = (depth_np - lo) / (hi - lo)
+
+            # 4) 反转（常用于 reversed-Z：近=大 → 近更亮）
+            if invert:
+                norm = 1.0 - norm
+
+            # 5) 裁剪到 [0,1]，并将非有限值置 0
+            norm[~finite_mask] = 0.0
+            norm = np.clip(norm, 0.0, 1.0)
+
+            # 6) 转整数并保存
+            if bitdepth == 16:
+                img = np.round(norm * 65535.0).astype(np.uint16)
+            elif bitdepth == 8:
+                img = np.round(norm * 255.0).astype(np.uint8)
+            else:
+                raise ValueError("bitdepth must be 8 or 16")
+
+            # OpenCV 保存（shape 必须是 (H,W)）
+            if has_cv and cv2 is not None:
+                ok = cv2.imwrite(filename, img)
+                if ok:
+                    if 'logger' in globals():
+                        logger.info(f"Saved depth to {filename} ({bitdepth}-bit PNG)")
+                    return True
+            else:
+                # PIL 兜底
+                try:
+                    from PIL import Image
+                    if bitdepth == 16:
+                        pil_img = Image.fromarray(img, mode="I;16")
+                    else:
+                        pil_img = Image.fromarray(img, mode="L")
+                    pil_img.save(filename)
+                    if 'logger' in globals():
+                        logger.info(f"Saved depth to {filename} using PIL ({bitdepth}-bit)")
+                    return True
+                except ImportError:
+                    if 'logger' in globals():
+                        logger.error("No image library available (OpenCV or PIL)")
+                    return False
+
+            return False
+
+        except Exception as e:
+            if 'logger' in globals():
+                logger.error(f"Failed to save depth PNG: {e}")
+            return False
+
+
     def save_frame_png(self, tensor: 'torch.Tensor', filename: str) -> bool:
         """Save frame tensor as PNG file."""
         try:
@@ -938,7 +1122,7 @@ class VK2TorchClient:
                 
                 logger.info(f"  [{i+1}/{iterations}] ✓ Received echo in {latency:.1f}ms")
                 
-                time.sleep(0.01)  # Small delay between iterations
+         
             
             logger.info("✓ ALL PING-PONG TESTS PASSED!")
             return True
@@ -949,6 +1133,16 @@ class VK2TorchClient:
     
     def disconnect(self):
         """Disconnect from Vulkan application."""
+        # Close shared memory
+        if self.shm:
+            try:
+                self.shm.close()
+                self.shm.unlink()
+                logger.info("Closed shared memory")
+            except Exception as e:
+                logger.warning(f"Error closing shared memory: {e}")
+            self.shm = None
+        
         if self.socket:
             self.socket.close()
             self.socket = None
@@ -977,96 +1171,3 @@ class VK2TorchClient:
         
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.disconnect()
-
-# Example usage and test functions
-def create_camera_matrices(distance: float = 5.0, yaw: float = 0.0, pitch: float = 0.0) -> Tuple[np.ndarray, np.ndarray]:
-    """Create view and projection matrices for camera control."""
-    # Simple orbit camera
-    import math
-    
-    # View matrix (camera looking at origin)
-    eye = np.array([
-        distance * math.cos(pitch) * math.cos(yaw),
-        distance * math.sin(pitch),
-        distance * math.cos(pitch) * math.sin(yaw)
-    ])
-    target = np.array([0, 0, 0])
-    up = np.array([0, 1, 0])
-    
-    # Create view matrix
-    z = eye - target
-    z = z / np.linalg.norm(z)
-    x = np.cross(up, z)
-    x = x / np.linalg.norm(x)
-    y = np.cross(z, x)
-    
-    view_matrix = np.array([
-        [x[0], y[0], z[0], 0],
-        [x[1], y[1], z[1], 0],
-        [x[2], y[2], z[2], 0],
-        [-np.dot(x, eye), -np.dot(y, eye), -np.dot(z, eye), 1]
-    ])
-    
-    # Projection matrix (perspective)
-    fov = math.radians(45.0)
-    aspect = 1920.0 / 1080.0  # TODO: use actual resolution
-    near = 0.1
-    far = 100.0
-    
-    f = 1.0 / math.tan(fov / 2.0)
-    proj_matrix = np.array([
-        [f / aspect, 0, 0, 0],
-        [0, f, 0, 0],
-        [0, 0, (far + near) / (near - far), (2 * far * near) / (near - far)],
-        [0, 0, -1, 0]
-    ])
-    
-    return view_matrix, proj_matrix
-
-def main():
-    """Main test function."""
-    logger.info("Starting VK2Torch client test")
-    
-    if not HAS_CUPY or not HAS_TORCH:
-        logger.error("CuPy and PyTorch are required for this client")
-        return
-        
-    with VK2TorchClient() as client:
-        if not client.connect():
-            logger.error("Failed to connect to Vulkan application")
-            return
-            
-        logger.info("Connected successfully, starting frame capture loop")
-        
-        # Test camera movement
-        for frame_idx in range(10):
-            # Create different camera positions
-            yaw = frame_idx * 0.1
-            distance = 5.0 + frame_idx * 0.2
-            view_matrix, proj_matrix = create_camera_matrices(distance, yaw, 0.0)
-            
-            # Update camera
-            if not client.update_camera(view_matrix, proj_matrix):
-                logger.error("Failed to update camera")
-                break
-                
-            # Get frame
-            tensor = client.get_frame()
-            if tensor is None:
-                logger.error("Failed to get frame")
-                break
-                
-            logger.info(f"Frame {frame_idx}: {tensor.shape} {tensor.dtype} on {tensor.device}")
-            
-            # Save every few frames
-            if frame_idx % 3 == 0:
-                filename = f"frame_{frame_idx:03d}.png"
-                if client.save_frame_png(tensor, filename):
-                    logger.info(f"Saved {filename}")
-                    
-            time.sleep(0.1)  # Small delay
-            
-        logger.info("Test completed")
-
-if __name__ == "__main__":
-    main()

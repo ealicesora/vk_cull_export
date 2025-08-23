@@ -724,7 +724,7 @@ void LodClusters::handleChanges()
 void LodClusters::onRender(VkCommandBuffer cmd)
 {
 
-  bool verbose = true;
+  bool verbose = false;
   if(m_app->isHeadless())
   {
     // If we have external memory manager and scene is initialized, wait for connection
