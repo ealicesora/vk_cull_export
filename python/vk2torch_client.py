@@ -376,7 +376,7 @@ class CUDADriverAPI:
         if err != CUDA_SUCCESS:
             self.cu_check(err,"get_mapped_buffer")
             raise RuntimeError(f"cuExternalMemoryGetMappedBuffer({name}) failed: {err} (invalid argument)")
-        print('win')
+
         return dev_ptr
 
 
@@ -433,7 +433,7 @@ class CUDADriverAPI:
         params.params.fence.value = ctypes.c_uint64(value)     # ★ 关键
 
         params.flags = 0
-        print("on signal_semaphore" + str(value))
+        # print("on signal_semaphore" + str(value))
         err = self.cuda.cuSignalExternalSemaphoresAsync(
             (ctypes.c_void_p * 1)(semaphore),
             (CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS * 1)(params),
@@ -444,7 +444,7 @@ class CUDADriverAPI:
         if err != CUDA_SUCCESS:
             self.cu_check(err,"signal_semaphore")
             raise RuntimeError(f"cuSignalExternalSemaphoresAsync failed: {err}")
-        print("finish signal_semaphore" + str(value))
+        # print("finish signal_semaphore" + str(value))
         # self.synchronize_stream(stream)
 
     def wait_semaphore(self, semaphore: ctypes.c_void_p, value: int, stream: Optional[ctypes.c_void_p] = None):
@@ -467,7 +467,7 @@ class CUDADriverAPI:
         if result != CUDA_SUCCESS:
             self.cu_check(result,"cuWaitExternalSemaphoresAsync")
             raise RuntimeError(f"cuWaitExternalSemaphoresAsync failed: {result}")
-        print("wait cuWaitExternalSemaphoresAsync succeed" + str(value))
+        # print("wait cuWaitExternalSemaphoresAsync succeed" + str(value))
 
     def synchronize_stream(self, stream: Optional[ctypes.c_void_p] = None):
         """Synchronize CUDA stream."""
@@ -759,7 +759,7 @@ class VK2TorchClient:
             finally:
                 payload_mv.release()
 
-            logger.info(f"Sent CAM1 camera packet frame={self.frame_number} (136B payload)")
+            # logger.info(f"Sent CAM1 camera packet frame={self.frame_number} (136B payload)")
             return True
         except Exception as e:
             logger.error(f"Failed to update camera(binary): {e}")
@@ -808,12 +808,21 @@ class VK2TorchClient:
             H, W = self.height, self.width
 
             raw32 = cp.ndarray((H, W), dtype=cp.uint32, memptr=mptr,
-                            strides=(self.row_pitch, 4))   # (行步长, 像素步长[字节])
-            depth24 = raw32 & 0x00FFFFFF
-            depth01 = depth24.astype(cp.float32) / float(0x00FFFFFF)
+                            strides=(self.row_pitch, 4))  # (row_pitch_bytes, bytes_per_pixel)
 
-            torch_tensor = torch.utils.dlpack.from_dlpack(depth01.toDlpack())
+            # 2) 仅“视图”改成 int32（零拷，方便 Torch 接收；不要再用 raw32 参与 DLPack）
+            raw_i32 = raw32.view(cp.int32)
 
+            # 3) 零拷到 Torch（注意：from_dlpack 接管内存生命周期；之后别再用 raw_i32）
+            t_i32 = torch.from_dlpack(raw_i32)
+
+            # 4) Torch 端完成位运算与归一化（尽量链式，减少中间张量）
+            mask = 0x00FFFFFF
+            torch_tensor = (t_i32 & mask).to(torch.float32) * (1.0 / 16777215.0) 
+            # torch_tensor = torch.from_dlpack(depth01)
+
+            # torch_tensor = torch.utils.dlpack.from_dlpack(depth01.toDlpack())
+            # print(torch_tensor.device)
             
             # Convert to PyTorch tensor via DLPack (zero-copy)
             # torch_tensor = torch.utils.dlpack.from_dlpack(torch_depth.toDlpack())

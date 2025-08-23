@@ -128,9 +128,9 @@ def test_system():
                 R, T, Fx, Fy, Cx, Cy, W, H, znear, zfar
             )
 
-            print(f"Frame {i}: update_camera (frame_number={client.frame_number}, distance={distance:.1f})")
+            # print(f"Frame {i}: update_camera (frame_number={client.frame_number}, distance={distance:.1f})")
             client.update_camera(view_flat, proj_flat)
-            print("✅ Camera matrices sent via socket")
+            # print("✅ Camera matrices sent via socket")
 
             frame = client.get_frame(timeout_ms=2000)
             # def depth01_to_linear(depth01, znear, zfar):
@@ -148,9 +148,9 @@ def test_system():
         print(f"Total time for 600 frames: {t_all:.2f}s")
         time.sleep(10)
         if frame is not None:
-            
+            123
             # print(frame.sum())
-            print(f"✅ Got frame: {frame.shape if hasattr(frame, 'shape') else 'data received'}")
+            # print(f"✅ Got frame: {frame.shape if hasattr(frame, 'shape') else 'data received'}")
         else:
             print("⚠️ Frame capture not available (expected without CUDA)")
         

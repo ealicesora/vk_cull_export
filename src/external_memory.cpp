@@ -782,7 +782,7 @@ bool ExternalMemoryManager::receiveCameraMatrices(float* viewMatrix, float* proj
     LOGE("Client socket not connected\n");
     return false;
   }
-
+  
   // ---------- 小工具：读满 n 字节 ----------
   auto recv_all = [&](void* buf, size_t n) -> ssize_t {
     uint8_t* p = static_cast<uint8_t*>(buf);
@@ -842,7 +842,7 @@ bool ExternalMemoryManager::receiveCameraMatrices(float* viewMatrix, float* proj
     // 如需用 frame 值：
     // uint32_t frame = pkt->frame;
 
-    LOGI("Successfully received CAM1 binary camera matrices\n");
+    // LOGI("Successfully received CAM1 binary camera matrices\n");
     return true;
   }
 
@@ -933,13 +933,13 @@ bool ExternalMemoryManager::waitForCameraReady(uint64_t frameNumber) {
     LOGE("vkGetSemaphoreCounterValue failed: %d\n", rc);
     return false;
   }
-  LOGI("camera sem counter before wait=%lu target=%lu \n", cur, frameNumber);
+  // LOGI("camera sem counter before wait=%lu target=%lu \n", cur, frameNumber);
 
 
   // Use a timeout of 100ms instead of waiting forever
   // This allows the app to continue rendering even if Python isn't sending frames
    const uint64_t timeout_ns = 100ull * 1000ull * 1000ull *10ull;
-  LOGI("vkWaitSemaphores  %lu\n", frameNumber);
+  // LOGI("vkWaitSemaphores  %lu\n", frameNumber);
   VkResult result = vkWaitSemaphores(m_device, &waitInfo, UINT64_MAX);
   
   if (result == VK_TIMEOUT) {

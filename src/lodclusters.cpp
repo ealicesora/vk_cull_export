@@ -1129,7 +1129,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
 
 
-    LOGI("Frame %lu: External memory copy added to command buffer\n", m_currentExternalFrameNumber);
+    // LOGI("Frame %lu: External memory copy added to command buffer\n", m_currentExternalFrameNumber);
   }
 
   m_resources.endFrame();
@@ -1152,10 +1152,13 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     frameDoneSubmit.semaphore = m_frameConfig.externalMemoryManager->getFrameDoneSemaphore();
     frameDoneSubmit.value = m_currentExternalFrameNumber;
     frameDoneSubmit.stageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
-    
+    //if(verbose)
+    {
     LOGI("Frame %lu: Signaling frame done semaphore with value %lu (external frame count: %d, last signaled: %lu)\n", 
          m_currentExternalFrameNumber, frameDoneSubmit.value, externalFrameCount, lastSignaledFrameNumber);
     
+    }
+
     // Double-check we're not signaling a duplicate or out-of-order value
     if (frameDoneSubmit.value <= lastSignaledFrameNumber) {
       LOGE("CRITICAL ERROR: Attempting to signal timeline semaphore with value %lu but already signaled %lu!\n", 
@@ -1165,7 +1168,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
       lastSignaledFrameNumber = frameDoneSubmit.value;
       //m_app->addSignalSemaphore(frameDoneSubmit);
        m_frameConfig.externalMemoryManager->signalFrameDone(frameDoneSubmit.value,m_app->getQueue(0).queue);
-      LOGI("Frame %lu: Frame done semaphore successfully added to submit\n", m_currentExternalFrameNumber);
+      // LOGI("Frame %lu: Frame done semaphore successfully added to submit\n", m_currentExternalFrameNumber);
       
       // Don't clear here as it might be needed for image copy
     }
