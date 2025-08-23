@@ -290,6 +290,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
   m_sceneBuildShaderio.errorOverDistanceThreshold =
       nvclusterlodErrorOverDistance(frame.lodPixelError * pixelScale, frame.frameConstants.fov,
                                     frame.frameConstants.viewportf.y);
+  m_sceneBuildShaderio.useHizOcclusion = frame.useHizOcclusion ? 1u : 0u;
 
   const bool useSky = true;  // When using Sky, the sky is rendered first and the rest of the scene is rendered on top of it.
 

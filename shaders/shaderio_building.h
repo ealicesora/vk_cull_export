@@ -147,6 +147,7 @@ struct SceneBuilding
   float errorOverDistanceThreshold;
   float culledErrorScale;
 
+  uint useHizOcclusion;
   uint sharingMinInstances;
   uint sharingMinLevel;
   uint sharingPushCulled;

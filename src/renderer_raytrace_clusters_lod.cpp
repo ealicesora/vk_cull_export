@@ -500,6 +500,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
                                     frame.frameConstants.viewportf.y);
 
   m_sceneBuildShaderio.culledErrorScale      = std::max(1.0f, frame.culledErrorScale);
+  m_sceneBuildShaderio.useHizOcclusion       = frame.useHizOcclusion ? 1u : 0u;
   m_sceneBuildShaderio.sharingMinInstances   = frame.sharingMinInstances;
   m_sceneBuildShaderio.sharingPushCulled     = frame.sharingPushCulled;
   m_sceneBuildShaderio.sharingToleranceLevel = std::max(1u, frame.sharingToleranceLevel);

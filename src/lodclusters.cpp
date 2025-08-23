@@ -109,6 +109,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"loderror"}, &m_frameConfig.lodPixelError);
   m_info.parameterRegistry->add({"cullederrorscale"}, &m_frameConfig.culledErrorScale);
   m_info.parameterRegistry->add({"culling"}, &m_rendererConfig.useCulling);
+  m_info.parameterRegistry->add({"hizocclusion"}, &m_frameConfig.useHizOcclusion);
 #if USE_DLSS
   m_info.parameterRegistry->add({"dlss"}, &m_rendererConfig.useDlss);
   m_info.parameterRegistry->add({"dlssquality"}, (int*)&m_rendererConfig.dlssQuality);

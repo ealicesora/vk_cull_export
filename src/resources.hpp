@@ -62,6 +62,7 @@ struct FrameConfig
 
   bool  showInstanceBboxes = false;
   bool  freezeCulling      = false;
+  bool  useHizOcclusion    = false;
   bool  hbaoActive         = true;
   float lodPixelError      = 1.0f;
   // increase error by this for instances not having primary visibility in ray tracing

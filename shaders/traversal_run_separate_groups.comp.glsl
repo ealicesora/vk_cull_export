@@ -140,7 +140,7 @@ bool queryWasVisible(mat4 instanceTransform, BBox bbox)
   vec4 clipMax;
   bool clipValid;
   
-  bool useOcclusion = true;
+  bool useOcclusion = build.useHizOcclusion != 0;
   
   bool inFrustum = intersectFrustum(bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum && 
