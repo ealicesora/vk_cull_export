@@ -1000,7 +1000,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
           
           // Receive camera matrices from Python via socket
           float viewMatrix[16], projMatrix[16];
-          if (m_frameConfig.externalMemoryManager->receiveCameraMatrices(viewMatrix, projMatrix)) {
+          if (false || m_frameConfig.externalMemoryManager->receiveCameraMatrices(viewMatrix, projMatrix)) {
             // Print received matrices in detail
             if (verbose)
             {
@@ -1064,6 +1064,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
               LOGI("Frame %lu: Successfully updated frame constants with Python camera matrices\n", frameNumber);
             }
 
+          
           } else {
             LOGW("Frame %lu: Failed to receive camera matrices, using default camera\n", frameNumber);
           }

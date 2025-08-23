@@ -461,6 +461,7 @@ python python/test_optimizations.py /tmp/debug.sock
 - **Memory Alignment**: Camera buffers must be 4KB aligned for CUDA compatibility - this is handled automatically
 - **GPU UUID Validation**: Multi-GPU systems require UUID matching between Vulkan and CUDA contexts for zero-copy functionality
 - **File Descriptor Management**: Unix domain sockets use SCM_RIGHTS for FD passing - ensure proper cleanup to avoid leaks
+- **Socket Communication**: The system minimizes per-frame socket overhead by using shared memory for camera data and GPU timeline semaphores for synchronization. Only fallback to socket communication if shared memory fails.
 
 ### Extension Points
 - **Custom Renderers**: Inherit from base `Renderer` class and integrate with `LodClusters::createRenderer()`
@@ -487,3 +488,12 @@ if(m_currentExternalFrameNumber > lastSignaledFrameNumber) {
 **NEVER modify this duplicate signaling prevention** - it's essential for GPU stability.
 - remember to change constexpr int32_t numFramesInFlight = 1; in application.cpp, when re-pull the nvpro_core2 repo
 - ignore the offscreen mode in vk_cluser, use headless mode instead.
+
+### Socket Communication Architecture
+The VK2Torch integration implements a minimal-socket design:
+- **Handshake Phase**: One-time exchange of configuration JSON + file descriptors via Unix Domain Socket with SCM_RIGHTS
+- **Runtime Phase**: Zero socket messages per frame in normal operation
+  - Camera data transferred via POSIX shared memory (`/vk2torch_camera`) with seqlock protocol
+  - Frame synchronization via GPU timeline semaphores (imported during handshake)
+  - Socket used only as fallback if shared memory unavailable (sends binary "CAM1" format or JSON)
+- This achieves near-zero CPU overhead for inter-process communication

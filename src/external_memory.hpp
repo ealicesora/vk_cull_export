@@ -45,7 +45,7 @@ struct ExternalMemoryConfig {
   bool offscreen = false;
   uint32_t width = 1920;
   uint32_t height = 1080;
-  VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+  VkFormat format = VK_FORMAT_D24_UNORM_S8_UINT;
 };
 
 class ExternalMemoryManager {

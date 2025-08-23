@@ -120,7 +120,7 @@ def test_system():
             Cx = W / 2
             Cy = H / 2
             znear, zfar = 0.1, 1000.0
-
+            print(i+1)
             view_flat, proj_flat = to_vulkan_viewproj_match_nvdiffrast(
                 R, T, Fx, Fy, Cx, Cy, W, H, znear, zfar
             )

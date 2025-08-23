@@ -591,38 +591,6 @@ class VK2TorchClient:
             logger.error(f"Handshake failed: {e}")
             return False
             
-
-    # 新的纯写入函数：不再改 seq，不做 seqlock
-    def _write_camera_to_shm_no_seqlock(self, view_matrix: np.ndarray, proj_matrix: np.ndarray) -> bool:
-        if not self.shm:
-            return False
-        try:
-            view_arr = np.asarray(view_matrix, dtype=np.float32).flatten()[:16]
-            proj_arr = np.asarray(proj_matrix, dtype=np.float32).flatten()[:16]
-            if view_arr.size != 16 or proj_arr.size != 16:
-                logger.error("View/Proj must have 16 elements each")
-                return False
-
-            camera_data = np.concatenate([view_arr, proj_arr])           # 32 * float32 = 128B
-            data_view   = memoryview(self.shm.buf)[self.shm_data_offset:self.shm_data_offset + 128]
-            data_view[:] = camera_data.tobytes()                          # 一次性写入 128B
-
-            # （可选）release 栅栏：在 x86_64 下一般可以省略；ARM/Jetson 上建议保留
-            try:
-                libc = ctypes.CDLL("libc.so.6")
-                # 这两个调用若存在会形成一个“全栅栏”，不存在就忽略（不会报错）
-                # 1) GCC 内建在很多发行版里可见；若不可见会抛异常
-                getattr(libc, "__sync_synchronize")()
-            except Exception:
-                # 没有也没关系；对常见 x86_64 桌面 Linux，程序次序 + 缓存一致性已足够
-                pass
-
-            return True
-        except Exception as e:
-            logger.error(f"Write camera shm failed: {e}")
-            return False
-
-
     def _receive_fds(self) -> bool:
         """Receive file descriptors via SCM_RIGHTS."""
         try:
@@ -819,27 +787,27 @@ class VK2TorchClient:
         if not self.connected:
             return False
         try:
+            # Initialize shared memory if not already done
             if not self.shm and not self._init_shared_memory():
-                logger.warning("Shared memory not available")
+                logger.warning("Shared memory not available - this may cause camera update to fail")
                 return False
-
-            # 1) 先把 128B 写完（不加 seqlock）
-            if not self._write_camera_to_shm_no_seqlock(view_matrix, proj_matrix):
+            
+            # Write camera matrices to shared memory using seqlock protocol
+            if not self._write_camera_to_shm(view_matrix, proj_matrix):
+                logger.error("Failed to write camera matrices to shared memory")
                 return False
-
-            # 2) 再 signal(sem_cam, frame_number)
+            
+            # Signal camera ready via semaphore (maintaining frame sync)
             if self.cuda_api:
                 self.cuda_api.signal_semaphore(self.sem_cam, self.frame_number)
-                # 注意：不要在这里自增 frame_number，等 get_frame() 收到 sem_done(N) 后再 ++
+                # self.frame_number += 1
             else:
                 logger.warning("CUDA API not available - semaphore signaling disabled")
-                return False
-
+            
             return True
         except Exception as e:
             logger.error(f"Failed to update camera: {e}")
             return False
-
 
 
 
