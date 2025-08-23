@@ -734,30 +734,30 @@ class VK2TorchClient:
             if self.cuda_api:
                 self.cuda_api.signal_semaphore(self.sem_cam, self.frame_number)
 
-            # 2) 组头: "CAM1" + frame(u32)
-            header = self._cam_hdr_packer.pack(self._cam_magic, int(self.frame_number))
+            # # 2) 组头: "CAM1" + frame(u32)
+            # header = self._cam_hdr_packer.pack(self._cam_magic, int(self.frame_number))
 
-            # 3) 填充 32 个 float32（定长 128B）
-            vm = np.asarray(view_matrix, dtype=np.float32).reshape(16)
-            pm = np.asarray(proj_matrix, dtype=np.float32).reshape(16)
-            self._cam_buf[:16] = vm
-            self._cam_buf[16:] = pm
-            payload_mv = memoryview(self._cam_buf).cast('B')  # 128B
+            # # 3) 填充 32 个 float32（定长 128B）
+            # vm = np.asarray(view_matrix, dtype=np.float32).reshape(16)
+            # pm = np.asarray(proj_matrix, dtype=np.float32).reshape(16)
+            # self._cam_buf[:16] = vm
+            # self._cam_buf[16:] = pm
+            # payload_mv = memoryview(self._cam_buf).cast('B')  # 128B
 
-            # 4) 长度前导（header 8B + payload 128B = 136B）
-            total_len = len(header) + len(payload_mv)
-            size_bytes = struct.pack('<I', total_len)
+            # # 4) 长度前导（header 8B + payload 128B = 136B）
+            # total_len = len(header) + len(payload_mv)
+            # size_bytes = struct.pack('<I', total_len)
 
-            # 5) 一次发出（优先 sendmsg；不支持则 sendall 三段）
-            try:
-                if hasattr(self.socket, 'sendmsg'):
-                    self.socket.sendmsg([size_bytes, header, payload_mv])
-                else:
-                    self.socket.sendall(size_bytes)
-                    self.socket.sendall(header)
-                    self.socket.sendall(payload_mv)
-            finally:
-                payload_mv.release()
+            # # 5) 一次发出（优先 sendmsg；不支持则 sendall 三段）
+            # try:
+            #     if hasattr(self.socket, 'sendmsg'):
+            #         self.socket.sendmsg([size_bytes, header, payload_mv])
+            #     else:
+            #         self.socket.sendall(size_bytes)
+            #         self.socket.sendall(header)
+            #         self.socket.sendall(payload_mv)
+            # finally:
+            #     payload_mv.release()
 
             # logger.info(f"Sent CAM1 camera packet frame={self.frame_number} (136B payload)")
             return True

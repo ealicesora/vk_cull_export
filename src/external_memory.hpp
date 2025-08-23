@@ -32,6 +32,9 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #endif
 
 namespace lodclusters {
@@ -72,6 +75,10 @@ public:
   // Socket-based camera control
   bool sendReadyMessage();
   bool receiveCameraMatrices(float* viewMatrix, float* projMatrix);
+  
+  // Shared memory camera control
+  bool ReadCamera32f(float out[32]);
+  bool tryOpenSharedMemory();  // Try to open shared memory if not already open
 
   // Frame synchronization
   bool waitForCameraReady(uint64_t frameNumber);
@@ -171,6 +178,12 @@ private:
   
   // Frame counter for window mode protocol
   uint64_t m_currentFrameNumber = 1;
+  
+  // Shared memory for camera matrices
+  int m_shmFd = -1;
+  void* m_shmPtr = nullptr;
+  static const size_t m_shmSize = 256;  // 256 bytes total
+  static constexpr const char* m_shmName = "/py2vk_cam32f";
 
   // Helper functions
   uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);

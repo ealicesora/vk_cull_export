@@ -724,7 +724,7 @@ void LodClusters::handleChanges()
 void LodClusters::onRender(VkCommandBuffer cmd)
 {
 
-  bool verbose = false;
+  bool verbose = true;
   if(m_app->isHeadless())
   {
     // If we have external memory manager and scene is initialized, wait for connection
@@ -1128,8 +1128,8 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
 
 
-
-    // LOGI("Frame %lu: External memory copy added to command buffer\n", m_currentExternalFrameNumber);
+      if (verbose)
+     LOGI("Frame %lu: External memory copy added to command buffer\n", m_currentExternalFrameNumber);
   }
 
   m_resources.endFrame();
@@ -1168,7 +1168,8 @@ void LodClusters::onRender(VkCommandBuffer cmd)
       lastSignaledFrameNumber = frameDoneSubmit.value;
       //m_app->addSignalSemaphore(frameDoneSubmit);
        m_frameConfig.externalMemoryManager->signalFrameDone(frameDoneSubmit.value,m_app->getQueue(0).queue);
-      // LOGI("Frame %lu: Frame done semaphore successfully added to submit\n", m_currentExternalFrameNumber);
+      if (verbose)
+       LOGI("Frame %lu: Frame done semaphore successfully added to submit\n", m_currentExternalFrameNumber);
       
       // Don't clear here as it might be needed for image copy
     }

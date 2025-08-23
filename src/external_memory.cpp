@@ -122,6 +122,30 @@ bool ExternalMemoryManager::init(VkDevice device, VkPhysicalDevice physicalDevic
     return false;
   }
 
+  // Setup POSIX shared memory for camera matrices (optional - will be created by Python)
+#ifndef _WIN32
+  LOGI("Setting up POSIX shared memory for camera matrices (optional)\n");
+  
+  // Try to open existing shared memory - it's okay if it doesn't exist yet
+  m_shmFd = shm_open(m_shmName, O_RDWR, 0666);
+  if (m_shmFd >= 0) {
+    // Map the shared memory
+    m_shmPtr = mmap(nullptr, m_shmSize, PROT_READ, MAP_SHARED, m_shmFd, 0);
+    if (m_shmPtr == MAP_FAILED) {
+      LOGI("Failed to map shared memory: %s\n", strerror(errno));
+      close(m_shmFd);
+      m_shmFd = -1;
+      m_shmPtr = nullptr;
+    } else {
+      LOGI("Shared memory for camera matrices ready: %s (%zu bytes)\n", m_shmName, m_shmSize);
+    }
+  } else {
+    LOGI("Shared memory %s not found (will be created by Python): %s\n", m_shmName, strerror(errno));
+    m_shmFd = -1;
+    m_shmPtr = nullptr;
+  }
+#endif
+
   LOGI("External Memory Manager initialized successfully\n");
   return true;
 }
@@ -145,6 +169,18 @@ void ExternalMemoryManager::deinit() {
     // Remove socket file
     unlink(m_config.udsPath.c_str());
   }
+
+  // Cleanup shared memory
+#ifndef _WIN32
+  if (m_shmPtr != nullptr && m_shmPtr != MAP_FAILED) {
+    munmap(m_shmPtr, m_shmSize);
+    m_shmPtr = nullptr;
+  }
+  if (m_shmFd >= 0) {
+    close(m_shmFd);
+    m_shmFd = -1;
+  }
+#endif
 
   // No memory was mapped (using device-local memory)
 
@@ -778,8 +814,19 @@ bool ExternalMemoryManager::receiveCameraMatrices(float* viewMatrix, float* proj
 #ifdef _WIN32
   return false;
 #else
+  // Try shared memory first (new primary method)
+  float camera32[32];
+  if (ReadCamera32f(camera32)) {
+    // Copy view matrix (first 16 floats)
+    std::memcpy(viewMatrix, camera32, sizeof(float) * 16);
+    // Copy projection matrix (next 16 floats)  
+    std::memcpy(projMatrix, camera32 + 16, sizeof(float) * 16);
+    return true;
+  }
+  
+  // Fall back to socket-based reception if shared memory fails
   if (m_clientSocket < 0) {
-    LOGE("Client socket not connected\n");
+    LOGE("Client socket not connected and shared memory unavailable\n");
     return false;
   }
   
@@ -1287,6 +1334,88 @@ bool ExternalMemoryManager::readCameraData(void* destination, size_t size) {
   // Camera data is now written directly by Python via CUDA
   // This function is no longer used since we don't map the buffer
   // The camera data is already in the device buffer when Python signals camReady
+  return false;
+#endif
+}
+
+bool ExternalMemoryManager::tryOpenSharedMemory() {
+#ifdef _WIN32
+  return false;
+#else
+  // If already open, nothing to do
+  if (m_shmFd >= 0 && m_shmPtr && m_shmPtr != MAP_FAILED) {
+    return true;
+  }
+  
+  // Try to open shared memory
+  m_shmFd = shm_open(m_shmName, O_RDWR, 0666);
+  if (m_shmFd >= 0) {
+    m_shmPtr = mmap(nullptr, m_shmSize, PROT_READ, MAP_SHARED, m_shmFd, 0);
+    if (m_shmPtr == MAP_FAILED) {
+      close(m_shmFd);
+      m_shmFd = -1;
+      m_shmPtr = nullptr;
+      return false;
+    }
+    LOGI("Successfully opened shared memory %s\n", m_shmName);
+    return true;
+  }
+  return false;
+#endif
+}
+
+bool ExternalMemoryManager::ReadCamera32f(float out[32]) {
+#ifdef _WIN32
+  return false;
+#else
+  // Try to open shared memory if not already open
+  if (!m_shmPtr && !tryOpenSharedMemory()) {
+    return false;
+  }
+  
+  if (!m_shmPtr || m_shmPtr == MAP_FAILED) {
+    return false;
+  }
+  
+  // Shared memory layout:
+  // Offset 0-7:    uint64_t seq (seqlock counter)  
+  // Offset 8-63:   Reserved (56 bytes for 64B alignment)
+  // Offset 64-191: float data[32] (camera matrices: 16 view + 16 proj)
+  // Offset 192-255: Reserved (64 bytes for future use)
+  
+  volatile uint64_t* seq = reinterpret_cast<volatile uint64_t*>(m_shmPtr);
+  volatile float* data = reinterpret_cast<volatile float*>(static_cast<char*>(m_shmPtr) + 64);
+  
+  // Seqlock reader pattern: read sequence → copy data → re-read sequence
+  // Retry if sequence changed or was odd during read
+  for (int retry = 0; retry < 100; ++retry) {
+    uint64_t seq1 = *seq;
+    
+    // If sequence is odd, writer is currently updating - retry
+    if (seq1 & 1) {
+      continue;
+    }
+    
+    // Copy the data
+    for (int i = 0; i < 32; ++i) {
+      out[i] = data[i];
+    }
+    
+    // Memory barrier to ensure data read completes before sequence re-read
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    
+    uint64_t seq2 = *seq;
+    
+    // If sequences match and are even, we have a consistent read
+    if (seq1 == seq2) {
+      return true;
+    }
+    
+    // Sequence changed during read, retry
+  }
+  
+  // Failed to get consistent read after retries
+  LOGE("ReadCamera32f: Failed to get consistent read after 100 retries\n");
   return false;
 #endif
 }
