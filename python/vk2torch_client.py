@@ -1095,42 +1095,7 @@ class VK2TorchClient:
             logger.error(f"✗ Semaphore test failed: {e}")
             logger.warning("Continuing without semaphore sync...")
     
-    def test_semaphore_ping_pong(self, iterations: int = 5) -> bool:
-        """Test semaphore ping-pong between CUDA and Vulkan.
-        
-        This sends incrementing values and expects them echoed back.
-        """
-        if not self.connected or not self.cuda_api:
-            logger.error("Not connected or CUDA not available")
-            return False
-        
-        logger.info(f"=== SEMAPHORE PING-PONG TEST ({iterations} iterations) ===")
-        
-        try:
-            for i in range(iterations):
-                test_value = 100 + i
-                
-                # Signal camera semaphore
-                logger.info(f"[{i+1}/{iterations}] Signaling value {test_value}...")
-                self.cuda_api.signal_semaphore(self.sem_cam, test_value)
-                
-                # Wait for response on done semaphore
-                start_time = time.time()
-                self.cuda_api.wait_semaphore(self.sem_done, test_value)
-                self.cuda_api.synchronize_stream()
-                latency = (time.time() - start_time) * 1000
-                
-                logger.info(f"  [{i+1}/{iterations}] ✓ Received echo in {latency:.1f}ms")
-                
-         
-            
-            logger.info("✓ ALL PING-PONG TESTS PASSED!")
-            return True
-            
-        except Exception as e:
-            logger.error(f"✗ Ping-pong test failed: {e}")
-            return False
-    
+
     def disconnect(self):
         """Disconnect from Vulkan application."""
         # Close shared memory

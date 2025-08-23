@@ -823,7 +823,7 @@ bool ExternalMemoryManager::receiveCameraMatrices(float* viewMatrix, float* proj
     std::memcpy(projMatrix, camera32 + 16, sizeof(float) * 16);
     return true;
   }
-  
+  printf("fall back to json?");
   // Fall back to socket-based reception if shared memory fails
   if (m_clientSocket < 0) {
     LOGE("Client socket not connected and shared memory unavailable\n");

@@ -962,7 +962,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
     if(m_frameConfig.externalMemoryManager && m_frameConfig.externalMemoryManager->isConnected())
     {
-      //printf("this is hit");
+  
       // Only process external memory protocol once per actual frame
       // Check if we haven't processed this frame yet
       static uint64_t lastProcessedExternalFrame = 0;
@@ -983,99 +983,94 @@ void LodClusters::onRender(VkCommandBuffer cmd)
       
         // For the first few frames after connection, don't wait for camera ready
         // This allows the render loop to start and Python to synchronize
-        static int framesAfterConnection = 0;
-        if (framesAfterConnection < -1) {
-          framesAfterConnection++;
-          if (verbose)
-          LOGI("Frame %lu: Skipping camera wait (frame %d after connection)\n", frameNumber, framesAfterConnection);
-        } else {
-          // Wait for Python to signal camera ready
-          // This is a synchronous wait - the frame will not proceed until Python provides camera data
-          if (verbose)
-          LOGI("Frame %lu: Waiting for camera ready signal...\n", frameNumber);
 
-          if(!m_frameConfig.externalMemoryManager->waitForCameraReady(frameNumber))
-          {
-            LOGW("Frame %lu: Camera ready timeout, proceeding with existing camera data\n", frameNumber);
-          }
-          else
-          {
+        // Wait for Python to signal camera ready
+        // This is a synchronous wait - the frame will not proceed until Python provides camera data
+        if (verbose)
+        LOGI("Frame %lu: Waiting for camera ready signal...\n", frameNumber);
+
+        if(!m_frameConfig.externalMemoryManager->waitForCameraReady(frameNumber))
+        {
+          LOGW("Frame %lu: Camera ready timeout, proceeding with existing camera data\n", frameNumber);
+        }
+        else
+        {
+          if (verbose)
+          LOGI("Frame %lu: Camera ready signal received, now receiving camera matrices...\n", frameNumber);
+          
+          // Receive camera matrices from Python via socket
+          float viewMatrix[16], projMatrix[16];
+          if (m_frameConfig.externalMemoryManager->receiveCameraMatrices(viewMatrix, projMatrix)) {
+            // Print received matrices in detail
             if (verbose)
-            LOGI("Frame %lu: Camera ready signal received, now receiving camera matrices...\n", frameNumber);
-            
-            // Receive camera matrices from Python via socket
-            float viewMatrix[16], projMatrix[16];
-            if (m_frameConfig.externalMemoryManager->receiveCameraMatrices(viewMatrix, projMatrix)) {
-              // Print received matrices in detail
-              if (verbose)
-              {
-                LOGI("Frame %lu: Received camera matrices from Python:\n", frameNumber);
-                LOGI("  View Matrix:\n");
-                for (int row = 0; row < 4; row++) {
-                  LOGI("    [%8.4f %8.4f %8.4f %8.4f]\n", 
-                      viewMatrix[row*4], viewMatrix[row*4+1], 
-                      viewMatrix[row*4+2], viewMatrix[row*4+3]);
-                }
-                LOGI("  Projection Matrix:\n");
-                for (int row = 0; row < 4; row++) {
-                  LOGI("    [%8.4f %8.4f %8.4f %8.4f]\n",
-                      projMatrix[row*4], projMatrix[row*4+1],
-                      projMatrix[row*4+2], projMatrix[row*4+3]);
-                }
+            {
+              LOGI("Frame %lu: Received camera matrices from Python:\n", frameNumber);
+              LOGI("  View Matrix:\n");
+              for (int row = 0; row < 4; row++) {
+                LOGI("    [%8.4f %8.4f %8.4f %8.4f]\n", 
+                    viewMatrix[row*4], viewMatrix[row*4+1], 
+                    viewMatrix[row*4+2], viewMatrix[row*4+3]);
               }
-
-              
-              // Convert from float arrays to glm::mat4 (column-major)
-              glm::mat4 pythonView = glm::mat4(
-                viewMatrix[0], viewMatrix[1], viewMatrix[2], viewMatrix[3],
-                viewMatrix[4], viewMatrix[5], viewMatrix[6], viewMatrix[7],
-                viewMatrix[8], viewMatrix[9], viewMatrix[10], viewMatrix[11],
-                viewMatrix[12], viewMatrix[13], viewMatrix[14], viewMatrix[15]
-              );
-              
-              glm::mat4 pythonProj = glm::mat4(
-                projMatrix[0], projMatrix[1], projMatrix[2], projMatrix[3],
-                projMatrix[4], projMatrix[5], projMatrix[6], projMatrix[7],
-                projMatrix[8], projMatrix[9], projMatrix[10], projMatrix[11],
-                projMatrix[12], projMatrix[13], projMatrix[14], projMatrix[15]
-              );
-              
-              // Override the frame constants with Python's camera matrices
-              frameConstants.viewMatrix = pythonView;
-              frameConstants.projMatrix = pythonProj;
-              frameConstants.viewMatrixI = glm::inverse(pythonView);
-              frameConstants.projMatrixI = glm::inverse(pythonProj);
-              frameConstants.viewProjMatrix = pythonProj * pythonView;
-              frameConstants.viewProjMatrixI = glm::inverse(frameConstants.viewProjMatrix);
-              
-              // Update derived camera properties
-              frameConstants.viewPos = frameConstants.viewMatrixI[3];  // Camera position
-              frameConstants.viewDir = -frameConstants.viewMatrixI[2]; // Camera direction
-              frameConstants.viewPlane = frameConstants.viewDir;
-              frameConstants.viewPlane.w = -glm::dot(glm::vec3(frameConstants.viewPos), glm::vec3(frameConstants.viewDir));
-              
-              // Update sky matrix
-              glm::mat4 viewNoTrans = pythonView;
-              viewNoTrans[3] = {0.0f, 0.0f, 0.0f, 1.0f};
-              frameConstants.skyProjMatrixI = glm::inverse(pythonProj * viewNoTrans);
-              if (verbose)
-              {
-                // Print extracted camera information
-                LOGI("  Extracted Camera Position: [%.4f, %.4f, %.4f]\n",
-                    frameConstants.viewPos.x, frameConstants.viewPos.y, frameConstants.viewPos.z);
-                LOGI("  Extracted Camera Direction: [%.4f, %.4f, %.4f]\n",
-                    frameConstants.viewDir.x, frameConstants.viewDir.y, frameConstants.viewDir.z);
-                
-                LOGI("Frame %lu: Successfully updated frame constants with Python camera matrices\n", frameNumber);
+              LOGI("  Projection Matrix:\n");
+              for (int row = 0; row < 4; row++) {
+                LOGI("    [%8.4f %8.4f %8.4f %8.4f]\n",
+                    projMatrix[row*4], projMatrix[row*4+1],
+                    projMatrix[row*4+2], projMatrix[row*4+3]);
               }
-
-            } else {
-              LOGW("Frame %lu: Failed to receive camera matrices, using default camera\n", frameNumber);
             }
+
+            
+            // Convert from float arrays to glm::mat4 (column-major)
+            glm::mat4 pythonView = glm::mat4(
+              viewMatrix[0], viewMatrix[1], viewMatrix[2], viewMatrix[3],
+              viewMatrix[4], viewMatrix[5], viewMatrix[6], viewMatrix[7],
+              viewMatrix[8], viewMatrix[9], viewMatrix[10], viewMatrix[11],
+              viewMatrix[12], viewMatrix[13], viewMatrix[14], viewMatrix[15]
+            );
+            
+            glm::mat4 pythonProj = glm::mat4(
+              projMatrix[0], projMatrix[1], projMatrix[2], projMatrix[3],
+              projMatrix[4], projMatrix[5], projMatrix[6], projMatrix[7],
+              projMatrix[8], projMatrix[9], projMatrix[10], projMatrix[11],
+              projMatrix[12], projMatrix[13], projMatrix[14], projMatrix[15]
+            );
+            
+            // Override the frame constants with Python's camera matrices
+            frameConstants.viewMatrix = pythonView;
+            frameConstants.projMatrix = pythonProj;
+            frameConstants.viewMatrixI = glm::inverse(pythonView);
+            frameConstants.projMatrixI = glm::inverse(pythonProj);
+            frameConstants.viewProjMatrix = pythonProj * pythonView;
+            frameConstants.viewProjMatrixI = glm::inverse(frameConstants.viewProjMatrix);
+            
+            // Update derived camera properties
+            frameConstants.viewPos = frameConstants.viewMatrixI[3];  // Camera position
+            frameConstants.viewDir = -frameConstants.viewMatrixI[2]; // Camera direction
+            frameConstants.viewPlane = frameConstants.viewDir;
+            frameConstants.viewPlane.w = -glm::dot(glm::vec3(frameConstants.viewPos), glm::vec3(frameConstants.viewDir));
+            
+            // Update sky matrix
+            glm::mat4 viewNoTrans = pythonView;
+            viewNoTrans[3] = {0.0f, 0.0f, 0.0f, 1.0f};
+            frameConstants.skyProjMatrixI = glm::inverse(pythonProj * viewNoTrans);
+            if (verbose)
+            {
+              // Print extracted camera information
+              LOGI("  Extracted Camera Position: [%.4f, %.4f, %.4f]\n",
+                  frameConstants.viewPos.x, frameConstants.viewPos.y, frameConstants.viewPos.z);
+              LOGI("  Extracted Camera Direction: [%.4f, %.4f, %.4f]\n",
+                  frameConstants.viewDir.x, frameConstants.viewDir.y, frameConstants.viewDir.z);
+              
+              LOGI("Frame %lu: Successfully updated frame constants with Python camera matrices\n", frameNumber);
+            }
+
+          } else {
+            LOGW("Frame %lu: Failed to receive camera matrices, using default camera\n", frameNumber);
           }
+        }
 
           
-        }
+        
       }  // end if (currentFrame > lastProcessedExternalFrame)
     }  // end if (externalMemoryManager && isConnected)
 
@@ -1085,7 +1080,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
   {
     m_resources.emptyFrame(cmd, m_frameConfig, m_profilerGpuTimer);
   }
-
+  if (!m_app->isHeadless())
   {
     m_resources.postProcessFrame(cmd, m_frameConfig, m_profilerGpuTimer);
   }
