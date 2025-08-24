@@ -48,8 +48,30 @@ struct DepthExportInfo {
   uint32_t row_pitch_bytes = 0;
   uint64_t size = 0;
   uint64_t offset = 0;
-  VkFormat format = VK_FORMAT_UNDEFINED;
+  VkFormat format = VK_FORMAT_D24_UNORM_S8_UINT;  // Stage 4: Set proper default format
   uint64_t last_signaled_payload = 0;
+};
+
+// Complete end-to-end interop structure with three timeline semaphores
+struct InteropExportInfo {
+  // Memory resources
+  int      depth_mem_fd         = -1;         // External memory FD (Opaque FD)
+  uint64_t depth_mem_size       = 0;          // bytes
+  uint64_t depth_mem_offset     = 0;          // bytes, if no sub-offset = 0
+
+  // Timeline semaphores for coordination
+  int      scene_ready_sem_fd   = -1;         // Timeline FD (Vulkan->Python)
+  int      camera_ready_sem_fd  = -1;         // Timeline FD (Python->Vulkan)
+  int      frame_done_sem_fd    = -1;         // Timeline FD (Vulkan->Python)
+
+  // Image layout/format metadata
+  uint32_t width                = 0;
+  uint32_t height               = 0;
+  uint32_t row_pitch_bytes      = 0;          // Important: row alignment
+  VkFormat depth_format         = VK_FORMAT_D24_UNORM_S8_UINT;
+
+  // Timeline values (for debugging/monitoring)
+  uint64_t last_signaled_frame_done = 0;
 };
 
 struct ExternalMemoryConfig {
@@ -80,12 +102,24 @@ public:
   VkExtent2D extent() const;                   // Image extent
   VkSemaphore timelineSemaphore() const;       // Timeline semaphore handle
   
-  // Export info aggregation for pybind11 integration
-  DepthExportInfo getDepthExportInfo() const;
+  // Stage 4: Export info aggregation with cached member
+  const DepthExportInfo& getDepthExportInfo() const { return m_exportInfo; }
+
+  // Complete end-to-end interop interface
+  const InteropExportInfo& getInteropInfo() const { return m_interopInfo; }
 
   // T3 requirements: Timeline semaphore access and payload tracking
   VkSemaphore frameDoneTimeline() const { return m_frameDoneSemaphore; }
   void setLastSignaled(uint64_t payload);
+
+  // Timeline semaphore coordination methods
+  bool signalSceneReady(uint64_t value = 1);                          // Vulkan -> Python
+  bool waitSceneReady(uint64_t value, uint32_t timeout_ms = 5000);    // CPU wait for scene ready
+  bool signalCameraReady(uint64_t value);                             // Python -> Vulkan (CPU signal)
+  bool waitCameraReady(uint64_t value, uint64_t timeout_ns = ~0ull);  // Vulkan CPU wait timeline
+  bool signalFrameDone(uint64_t value, VkQueue queue);               // Vulkan -> Python (vkQueueSubmit2)
+  void setCurrentFrameValue(uint64_t v);                             // Record current frame count
+  uint64_t currentFrameValue() const;
 
   // Create exportable resources
   bool createExportableBuffer(VkDeviceSize size, VkBufferUsageFlags usage, 
@@ -111,9 +145,8 @@ public:
   bool ReadCamera32f(float out[32]);
   bool tryOpenSharedMemory();  // Try to open shared memory if not already open
 
-  // Frame synchronization
+  // Frame synchronization  
   bool waitForCameraReady(uint64_t frameNumber);
-  bool signalFrameDone(uint64_t frameNumber, VkQueue queue);
   
   // Camera data reading
   bool readCameraData(void* destination, size_t size);
@@ -122,11 +155,10 @@ public:
   void addCameraWaitToSubmit(VkSubmitInfo& submitInfo, uint64_t frameNumber, VkTimelineSemaphoreSubmitInfo& timelineInfo, 
                              VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
   void addFrameDoneSignalToSubmit(VkSubmitInfo& submitInfo, uint64_t frameNumber, VkTimelineSemaphoreSubmitInfo& timelineInfo);
-  // void cmdCopyImageToColorBuffer(VkCommandBuffer cmd, VkImage srcImage, VkImageLayout srcLayout, uint32_t width, uint32_t height);
   
   void cmdCopyImageToColorBuffer(VkCommandBuffer cmd,
                                                         VkImage srcImage,
-                                                        VkImageLayout currentLayout, // 传“真实当前布局”
+                                                        VkImageLayout currentLayout, // 传"真实当前布局"
                                                         uint32_t width, uint32_t height);
 
   void cmdCopyDepthToBuffer(VkCommandBuffer cmd,
@@ -145,10 +177,6 @@ public:
     return m_currentFrameNumber++; 
   }
   uint64_t getCurrentFrameNumber() const { return m_currentFrameNumber; }
-
-  // Frame number channel for PyBridge/LodClusters coordination
-  void setCurrentFrameValue(uint64_t v);      // Set by PyBridge before onRender
-  uint64_t currentFrameValue() const;         // Read by LodClusters onRender for signal value
 
   // Getters
   VkBuffer getCameraBuffer() const { return m_cameraBuffer; }
@@ -233,6 +261,17 @@ private:
   // T3 requirement: Track last signaled timeline payload
   uint64_t m_lastSignaledPayload = 0;
   
+  // Stage 4: Cached export info for efficient access
+  mutable DepthExportInfo m_exportInfo;
+  
+  // Complete end-to-end interop info with three timeline semaphores
+  mutable InteropExportInfo m_interopInfo;
+  
+  // Timeline semaphores for complete coordination
+  VkSemaphore m_sceneReadyTimeline = VK_NULL_HANDLE;   // Vulkan->Python (scene ready)
+  VkSemaphore m_cameraReadyTimeline = VK_NULL_HANDLE;  // Python->Vulkan (camera ready)
+  // Note: m_frameDoneSemaphore already exists for frame done signaling
+  
   // Shared memory for camera matrices
   int m_shmFd = -1;
   void* m_shmPtr = nullptr;
@@ -245,6 +284,10 @@ private:
                                      VkExternalMemoryHandleTypeFlagBits handleType);
   bool checkExtensionSupport(const char* extensionName);
   void semaphoreEchoWorker();
+  
+  // Stage 4: Helper to populate export info when resources are ready
+  void updateExportInfo();
+  void updateInteropInfo();  // Update complete interop info with all three semaphores
 };
 
 } // namespace lodclusters

@@ -157,6 +157,129 @@ public:
     }
 
     /**
+     * Get complete interop export information with all FDs and metadata
+     * @return Dictionary with memory/semaphore FDs and metadata for CUDA interop
+     */
+    pybind11::dict get_interop_info() {
+        if (!m_externalMemory) {
+            throw std::runtime_error("ExternalMemoryManager not initialized");
+        }
+
+        // Get complete export info from ExternalMemoryManager
+        auto info = m_externalMemory->getInteropInfo();
+        
+        pybind11::dict d;
+        d["depth_mem_fd"]             = info.depth_mem_fd;
+        d["scene_ready_sem_fd"]       = info.scene_ready_sem_fd;
+        d["camera_ready_sem_fd"]      = info.camera_ready_sem_fd;
+        d["frame_done_sem_fd"]        = info.frame_done_sem_fd;
+        d["width"]                    = info.width;
+        d["height"]                   = info.height;
+        d["row_pitch_bytes"]          = info.row_pitch_bytes;
+        d["size"]                     = pybind11::int_(info.depth_mem_size);
+        d["offset"]                   = pybind11::int_(info.depth_mem_offset);
+        d["depth_format"]             = static_cast<uint32_t>(info.depth_format);
+        d["last_signaled_frame_done"] = pybind11::int_(info.last_signaled_frame_done);
+        
+        // Add format name for convenience
+        d["format_name"] = "VK_FORMAT_D24_UNORM_S8_UINT";
+        d["handle_types"] = "OPAQUE_FD";
+        
+        return d;
+    }
+
+    /**
+     * Set camera view and projection matrices from numpy arrays
+     * @param proj 4x4 projection matrix (row-major numpy array)
+     * @param view 4x4 view matrix (row-major numpy array)
+     */
+    void set_camera_matrices(pybind11::array proj_arr, pybind11::array view_arr) {
+        // Validate input arrays
+        if (proj_arr.ndim() != 2 || proj_arr.shape(0) != 4 || proj_arr.shape(1) != 4) {
+            throw std::runtime_error("proj must be 4x4 matrix");
+        }
+        if (view_arr.ndim() != 2 || view_arr.shape(0) != 4 || view_arr.shape(1) != 4) {
+            throw std::runtime_error("view must be 4x4 matrix");
+        }
+
+        // Convert to float arrays (handle both float32 and float64)
+        std::array<float, 16> proj_data{}, view_data{};
+        
+        pybind11::buffer_info proj_buf = proj_arr.request();
+        pybind11::buffer_info view_buf = view_arr.request();
+        
+        // Convert projection matrix
+        if (proj_buf.itemsize == 8) {
+            const double* src = static_cast<const double*>(proj_buf.ptr);
+            for (int i = 0; i < 16; ++i) proj_data[i] = float(src[i]);
+        } else {
+            const float* src = static_cast<const float*>(proj_buf.ptr);
+            for (int i = 0; i < 16; ++i) proj_data[i] = src[i];
+        }
+        
+        // Convert view matrix
+        if (view_buf.itemsize == 8) {
+            const double* src = static_cast<const double*>(view_buf.ptr);
+            for (int i = 0; i < 16; ++i) view_data[i] = float(src[i]);
+        } else {
+            const float* src = static_cast<const float*>(view_buf.ptr);
+            for (int i = 0; i < 16; ++i) view_data[i] = src[i];
+        }
+        
+        // Convert row-major to column-major (GLM format)
+        glm::mat4 proj(1.0f), view(1.0f);
+        for (int r = 0; r < 4; ++r) {
+            for (int c = 0; c < 4; ++c) {
+                proj[c][r] = proj_data[r * 4 + c];  // row-major -> column-major
+                view[c][r] = view_data[r * 4 + c];
+            }
+        }
+        
+        // Apply camera override to LodClusters and signal camera ready
+        if (m_lodclusters) {
+            m_lodclusters->enableOverrideCamera(proj, view);
+            
+            // Signal camera ready if external memory manager is available
+            if (m_externalMemory) {
+                uint64_t frameValue = m_frameCounter.load();
+                m_externalMemory->signalCameraReady(frameValue);
+            }
+        } else {
+            throw std::runtime_error("LodClusters not initialized");
+        }
+    }
+
+    /**
+     * Wait for scene ready signal from CPU (optional CPU-based waiting)
+     * @param timeout_ms Timeout in milliseconds (default: 5000ms)
+     * @return True if scene ready signal received, false on timeout
+     */
+    bool wait_scene_ready_cpu(uint32_t timeout_ms = 5000) {
+        if (!m_externalMemory) {
+            throw std::runtime_error("ExternalMemoryManager not initialized");
+        }
+        
+        return m_externalMemory->waitSceneReady(1, timeout_ms);
+    }
+
+    /**
+     * Render one frame with CPU control (for frame-by-frame Python control)
+     * @return Frame number that was rendered
+     */
+    uint64_t render_one_frame() {
+        if (!m_lodclusters) {
+            throw std::runtime_error("LodClusters not initialized");
+        }
+        
+        uint64_t frame_value = m_frameCounter.fetch_add(1) + 1;
+        
+        // Trigger frame render with timeline signaling
+        m_lodclusters->renderOneFrame(frame_value);
+        
+        return frame_value;
+    }
+
+    /**
      * Get row pitch in bytes for the exported buffer
      * @return Row pitch in bytes from ExternalMemoryManager
      */
@@ -251,60 +374,6 @@ public:
         return d;
     }
 
-    /**
-     * Set camera view and projection matrices
-     * @param proj 4x4 projection matrix (row-major)
-     * @param view 4x4 view matrix (row-major)
-     */
-    void set_camera_matrices(pybind11::array proj_arr, pybind11::array view_arr) {
-        // Validate input arrays
-        if (proj_arr.ndim() != 2 || proj_arr.shape(0) != 4 || proj_arr.shape(1) != 4) {
-            throw std::runtime_error("proj must be 4x4 matrix");
-        }
-        if (view_arr.ndim() != 2 || view_arr.shape(0) != 4 || view_arr.shape(1) != 4) {
-            throw std::runtime_error("view must be 4x4 matrix");
-        }
-
-        // Convert to float arrays (handle both float32 and float64)
-        std::array<float, 16> proj_data{}, view_data{};
-        
-        pybind11::buffer_info proj_buf = proj_arr.request();
-        pybind11::buffer_info view_buf = view_arr.request();
-        
-        // Convert projection matrix
-        if (proj_buf.itemsize == 8) {
-            const double* src = static_cast<const double*>(proj_buf.ptr);
-            for (int i = 0; i < 16; ++i) proj_data[i] = float(src[i]);
-        } else {
-            const float* src = static_cast<const float*>(proj_buf.ptr);
-            for (int i = 0; i < 16; ++i) proj_data[i] = src[i];
-        }
-        
-        // Convert view matrix
-        if (view_buf.itemsize == 8) {
-            const double* src = static_cast<const double*>(view_buf.ptr);
-            for (int i = 0; i < 16; ++i) view_data[i] = float(src[i]);
-        } else {
-            const float* src = static_cast<const float*>(view_buf.ptr);
-            for (int i = 0; i < 16; ++i) view_data[i] = src[i];
-        }
-        
-        // Convert row-major to column-major (GLM format)
-        glm::mat4 proj(1.0f), view(1.0f);
-        for (int r = 0; r < 4; ++r) {
-            for (int c = 0; c < 4; ++c) {
-                proj[c][r] = proj_data[r * 4 + c];  // row-major -> column-major
-                view[c][r] = view_data[r * 4 + c];
-            }
-        }
-        
-        // Apply camera override to LodClusters
-        if (m_lodclusters) {
-            m_lodclusters->enableOverrideCamera(proj, view);
-        } else {
-            throw std::runtime_error("LodClusters not initialized");
-        }
-    }
 
     /**
      * Trigger one frame render and signal completion
@@ -380,7 +449,7 @@ private:
     std::mutex m_stopMutex;
     std::condition_variable m_stopCondition;
     
-    // Frame synchronization for render_and_signal
+    // Frame synchronization for render_and_signal and set_camera_matrices
     std::atomic<uint64_t> m_frameCounter{0};
     
     // Shared components for elements
@@ -714,6 +783,17 @@ PYBIND11_MODULE(vk2torch_ext, m) {
         
         .def("last_signaled_frame", &Vk2TorchApp::last_signaled_frame,
              "Get last signaled frame number from timeline semaphore")
+        
+        // New interop methods for complete three-way timeline semaphore coordination
+        .def("get_interop_info", &Vk2TorchApp::get_interop_info,
+             "Get complete interop export information with all FDs and metadata")
+        
+        .def("wait_scene_ready_cpu", &Vk2TorchApp::wait_scene_ready_cpu,
+             "Wait for scene ready signal from CPU (optional CPU-based waiting)",
+             py::arg("timeout_ms") = 5000)
+        
+        .def("render_one_frame", &Vk2TorchApp::render_one_frame,
+             "Render one frame with CPU control (for frame-by-frame Python control)")
         
         // Lifecycle management
         .def("stop", &Vk2TorchApp::stop,

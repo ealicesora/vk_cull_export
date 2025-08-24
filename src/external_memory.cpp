@@ -190,12 +190,30 @@ bool ExternalMemoryManager::initInProcess(VkDevice device, VkPhysicalDevice phys
   LOGI("  Actual allocated size: %zu bytes (dedicated: %s)\n", 
        m_depthBufferSize, m_depthBufferDedicated ? "yes" : "no");
 
-  // Create timeline semaphore for frame synchronization
+  // Create timeline semaphores for complete coordination
   LOGI("Creating frame done timeline semaphore\n");
   if (!createExportableTimelineSemaphore(&m_frameDoneSemaphore, 0, &m_frameDoneSemaphoreFd)) {
     LOGE("Failed to create frame done timeline semaphore\n");
     return false;
   }
+
+  LOGI("Creating scene ready timeline semaphore\n");
+  int sceneReadyFd = -1;
+  if (!createExportableTimelineSemaphore(&m_sceneReadyTimeline, 0, &sceneReadyFd)) {
+    LOGE("Failed to create scene ready timeline semaphore\n");
+    return false;
+  }
+
+  LOGI("Creating camera ready timeline semaphore\n");
+  int cameraReadyFd = -1;
+  if (!createExportableTimelineSemaphore(&m_cameraReadyTimeline, 0, &cameraReadyFd)) {
+    LOGE("Failed to create camera ready timeline semaphore\n");
+    return false;
+  }
+
+  // Stage 4: Populate both export info structures with FD export now that resources are created
+  updateExportInfo();
+  updateInteropInfo();
 
   LOGI("External Memory Manager initialized in in-process mode successfully\n");
   return true;
@@ -267,6 +285,14 @@ void ExternalMemoryManager::deinit() {
   if (m_frameDoneSemaphore != VK_NULL_HANDLE) {
     vkDestroySemaphore(m_device, m_frameDoneSemaphore, nullptr);
     m_frameDoneSemaphore = VK_NULL_HANDLE;
+  }
+  if (m_sceneReadyTimeline != VK_NULL_HANDLE) {
+    vkDestroySemaphore(m_device, m_sceneReadyTimeline, nullptr);
+    m_sceneReadyTimeline = VK_NULL_HANDLE;
+  }
+  if (m_cameraReadyTimeline != VK_NULL_HANDLE) {
+    vkDestroySemaphore(m_device, m_cameraReadyTimeline, nullptr);
+    m_cameraReadyTimeline = VK_NULL_HANDLE;
   }
   
   // Close in-process mode file descriptors  
@@ -700,21 +726,29 @@ void ExternalMemoryManager::cmdCopyDepthToBuffer(VkCommandBuffer cmd,
                                                  VkImageLayout   restoreLayout)
 {
 #ifndef _WIN32
-  if (!isConnected()) return;
+  if (!m_inProcessMode && !isConnected()) return;
 
-  // 1) old->TRANSFER_SRC （只切 Depth 面）
+  // Use depth readback buffer for in-process mode, color buffer for UDS mode
+  VkBuffer targetBuffer = m_inProcessMode ? m_depthReadbackBuffer : m_colorReadbackBuffer;
+  
+  if (targetBuffer == VK_NULL_HANDLE) {
+    LOGE("Target buffer not available for depth copy\n");
+    return;
+  }
+
+  // 1) Transition depth aspect: old->TRANSFER_SRC
   VkImageMemoryBarrier pre{};
   pre.sType                           = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
   pre.srcAccessMask                   = (depthOldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                                           ? VK_ACCESS_SHADER_READ_BIT
                                           : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
   pre.dstAccessMask                   = VK_ACCESS_TRANSFER_READ_BIT;
-  pre.oldLayout                       = depthOldLayout;  // ★ 真实旧布局
+  pre.oldLayout                       = depthOldLayout;
   pre.newLayout                       = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
   pre.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
   pre.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
   pre.image                           = depthImage;
-  pre.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT; // 只操作 depth 面
+  pre.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT; // Only depth aspect
   pre.subresourceRange.baseMipLevel   = 0;
   pre.subresourceRange.levelCount     = 1;
   pre.subresourceRange.baseArrayLayer = 0;
@@ -727,10 +761,10 @@ void ExternalMemoryManager::cmdCopyDepthToBuffer(VkCommandBuffer cmd,
                        VK_PIPELINE_STAGE_TRANSFER_BIT,
                        0, 0, nullptr, 0, nullptr, 1, &pre);
 
-  // 2) 拷贝 depth 平面到 buffer
+  // 2) Copy depth plane to buffer
   VkBufferImageCopy region{};
   region.bufferOffset                    = 0;
-  region.bufferRowLength                 = 0;
+  region.bufferRowLength                 = m_inProcessMode ? (m_actualRowPitch / 4) : 0; // Pixels per row
   region.bufferImageHeight               = 0;
   region.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT;
   region.imageSubresource.mipLevel       = 0;
@@ -742,10 +776,10 @@ void ExternalMemoryManager::cmdCopyDepthToBuffer(VkCommandBuffer cmd,
   vkCmdCopyImageToBuffer(cmd,
                          depthImage,
                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                         m_colorReadbackBuffer,
+                         targetBuffer,
                          1, &region);
 
-  // 3a) 恢复 depth 面到 restoreLayout
+  // 3a) Restore depth aspect to restoreLayout
   VkImageMemoryBarrier post{};
   post.sType                           = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
   post.srcAccessMask                   = VK_ACCESS_TRANSFER_READ_BIT;
@@ -770,20 +804,20 @@ void ExternalMemoryManager::cmdCopyDepthToBuffer(VkCommandBuffer cmd,
                          : VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
                        0, 0, nullptr, 0, nullptr, 1, &post);
 
-  // 3b) ★关键：若是深度+模板格式，把 STENCIL 面也从 SRV 恢复到 restoreLayout
+  // 3b) Handle stencil aspect for depth+stencil formats
   {
     VkImageMemoryBarrier postStencil{};
     postStencil.sType                           = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    postStencil.srcAccessMask                   = VK_ACCESS_SHADER_READ_BIT;               // 之前被采样
+    postStencil.srcAccessMask                   = VK_ACCESS_SHADER_READ_BIT;
     postStencil.dstAccessMask                   = (restoreLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                                                    ? VK_ACCESS_SHADER_READ_BIT
                                                    : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    postStencil.oldLayout                       = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // ★匹配校验器记忆
+    postStencil.oldLayout                       = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     postStencil.newLayout                       = restoreLayout;
     postStencil.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
     postStencil.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
     postStencil.image                           = depthImage;
-    postStencil.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_STENCIL_BIT;            // 只操作 stencil
+    postStencil.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_STENCIL_BIT; // Only stencil aspect
     postStencil.subresourceRange.baseMipLevel   = 0;
     postStencil.subresourceRange.levelCount     = 1;
     postStencil.subresourceRange.baseArrayLayer = 0;
@@ -796,6 +830,9 @@ void ExternalMemoryManager::cmdCopyDepthToBuffer(VkCommandBuffer cmd,
                            : VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &postStencil);
   }
+  
+  LOGI("Depth copy command added: %ux%u -> buffer (row pitch: %u)\n", width, height, 
+       m_inProcessMode ? m_actualRowPitch : (width * 4));
 #endif
 }
 
@@ -1088,7 +1125,7 @@ bool ExternalMemoryManager::signalFrameDone(uint64_t frameNumber, VkQueue queue)
 #ifdef _WIN32
   return false;
 #else
-  if (!isConnected()) {
+  if (!m_inProcessMode && !isConnected()) {
     return false;
   }
   
@@ -1564,33 +1601,61 @@ VkExtent2D ExternalMemoryManager::extent() const {
   return {m_config.width, m_config.height};
 }
 
-DepthExportInfo ExternalMemoryManager::getDepthExportInfo() const {
-  DepthExportInfo info{};
-  
+// Stage 4: Update cached export info with current values
+void ExternalMemoryManager::updateExportInfo() {
   if (!m_inProcessMode) {
-    LOGE("getDepthExportInfo: Not initialized in in-process mode\n");
-    return info;
+    LOGE("updateExportInfo: Not initialized in in-process mode\n");
+    return;
   }
   
   // Fill in basic info
-  info.width = m_config.width;
-  info.height = m_config.height;
-  info.row_pitch_bytes = m_actualRowPitch;
-  info.size = static_cast<uint64_t>(m_actualRowPitch) * m_config.height;
-  info.offset = 0;
-  info.format = m_config.exportDepthFormat;
+  m_exportInfo.width = m_config.width;
+  m_exportInfo.height = m_config.height;
+  m_exportInfo.row_pitch_bytes = m_actualRowPitch;
+  m_exportInfo.size = static_cast<uint64_t>(m_actualRowPitch) * m_config.height;
+  m_exportInfo.offset = 0;
+  m_exportInfo.format = m_config.exportDepthFormat;
   
-  // Get file descriptors (don't duplicate here - caller will decide)
-  info.memory_fd = exportDepthBufferFdDup();
-  info.timeline_semaphore_fd = exportFrameDoneSemaphoreFdDup();
-  
-  // Get last signaled timeline semaphore value  
-  {
-    std::lock_guard<std::mutex> lock(m_frameValueMutex);
-    info.last_signaled_payload = m_lastSignaledPayload;
+  // Export file descriptors using vkGetMemoryFdKHR/vkGetSemaphoreFdKHR
+  if (m_depthReadbackMemory != VK_NULL_HANDLE) {
+    VkMemoryGetFdInfoKHR fdInfo{VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR};
+    fdInfo.memory = m_depthReadbackMemory;
+    fdInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    
+    int memFd = -1;
+    VkResult result = vkGetMemoryFdKHR(m_device, &fdInfo, &memFd);
+    if (result == VK_SUCCESS) {
+      m_exportInfo.memory_fd = memFd;
+      LOGI("updateExportInfo: Exported memory FD: %d\n", memFd);
+    } else {
+      LOGE("updateExportInfo: Failed to export memory FD: %d\n", result);
+    }
   }
   
-  return info;
+  if (m_frameDoneSemaphore != VK_NULL_HANDLE) {
+    VkSemaphoreGetFdInfoKHR semFdInfo{VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR};
+    semFdInfo.semaphore = m_frameDoneSemaphore;
+    semFdInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+    
+    int semFd = -1;
+    VkResult result = vkGetSemaphoreFdKHR(m_device, &semFdInfo, &semFd);
+    if (result == VK_SUCCESS) {
+      m_exportInfo.timeline_semaphore_fd = semFd;
+      LOGI("updateExportInfo: Exported semaphore FD: %d\n", semFd);
+    } else {
+      LOGE("updateExportInfo: Failed to export semaphore FD: %d\n", result);
+    }
+  }
+  
+  // Update last signaled value with thread safety
+  {
+    std::lock_guard<std::mutex> lock(m_frameValueMutex);
+    m_exportInfo.last_signaled_payload = m_lastSignaledPayload;
+  }
+  
+  LOGI("updateExportInfo: Export info updated - %dx%d, pitch=%d, size=%lu, format=%d\n",
+       m_exportInfo.width, m_exportInfo.height, m_exportInfo.row_pitch_bytes, 
+       m_exportInfo.size, m_exportInfo.format);
 }
 
 VkSemaphore ExternalMemoryManager::timelineSemaphore() const {
@@ -1608,10 +1673,210 @@ uint64_t ExternalMemoryManager::currentFrameValue() const {
   return m_currentFrameValue;
 }
 
-// T3 requirement: Set last signaled timeline payload
+// Stage 4: Set last signaled timeline payload in cached export info
 void ExternalMemoryManager::setLastSignaled(uint64_t payload) {
   std::lock_guard<std::mutex> lock(m_frameValueMutex);
   m_lastSignaledPayload = payload;
+  m_exportInfo.last_signaled_payload = payload;  // Update cached export info
+  m_interopInfo.last_signaled_frame_done = payload;  // Update interop info
+}
+
+// Complete interop info update with three timeline semaphores
+void ExternalMemoryManager::updateInteropInfo() {
+  if (!m_inProcessMode) {
+    LOGE("updateInteropInfo: Not initialized in in-process mode\n");
+    return;
+  }
+  
+  // Fill in memory info
+  m_interopInfo.width = m_config.width;
+  m_interopInfo.height = m_config.height;
+  m_interopInfo.row_pitch_bytes = m_actualRowPitch;
+  m_interopInfo.depth_mem_size = static_cast<uint64_t>(m_actualRowPitch) * m_config.height;
+  m_interopInfo.depth_mem_offset = 0;
+  m_interopInfo.depth_format = m_config.exportDepthFormat;
+  
+  // Export depth buffer FD
+  if (m_depthReadbackMemory != VK_NULL_HANDLE) {
+    VkMemoryGetFdInfoKHR fdInfo{VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR};
+    fdInfo.memory = m_depthReadbackMemory;
+    fdInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    
+    int memFd = -1;
+    VkResult result = vkGetMemoryFdKHR(m_device, &fdInfo, &memFd);
+    if (result == VK_SUCCESS) {
+      m_interopInfo.depth_mem_fd = memFd;
+      LOGI("updateInteropInfo: Exported depth memory FD: %d\n", memFd);
+    } else {
+      LOGE("updateInteropInfo: Failed to export depth memory FD: %d\n", result);
+    }
+  }
+  
+  // Export scene ready timeline semaphore FD
+  if (m_sceneReadyTimeline != VK_NULL_HANDLE) {
+    VkSemaphoreGetFdInfoKHR semFdInfo{VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR};
+    semFdInfo.semaphore = m_sceneReadyTimeline;
+    semFdInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+    
+    int semFd = -1;
+    VkResult result = vkGetSemaphoreFdKHR(m_device, &semFdInfo, &semFd);
+    if (result == VK_SUCCESS) {
+      m_interopInfo.scene_ready_sem_fd = semFd;
+      LOGI("updateInteropInfo: Exported scene ready semaphore FD: %d\n", semFd);
+    } else {
+      LOGE("updateInteropInfo: Failed to export scene ready semaphore FD: %d\n", result);
+    }
+  }
+  
+  // Export camera ready timeline semaphore FD
+  if (m_cameraReadyTimeline != VK_NULL_HANDLE) {
+    VkSemaphoreGetFdInfoKHR semFdInfo{VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR};
+    semFdInfo.semaphore = m_cameraReadyTimeline;
+    semFdInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+    
+    int semFd = -1;
+    VkResult result = vkGetSemaphoreFdKHR(m_device, &semFdInfo, &semFd);
+    if (result == VK_SUCCESS) {
+      m_interopInfo.camera_ready_sem_fd = semFd;
+      LOGI("updateInteropInfo: Exported camera ready semaphore FD: %d\n", semFd);
+    } else {
+      LOGE("updateInteropInfo: Failed to export camera ready semaphore FD: %d\n", result);
+    }
+  }
+  
+  // Export frame done timeline semaphore FD
+  if (m_frameDoneSemaphore != VK_NULL_HANDLE) {
+    VkSemaphoreGetFdInfoKHR semFdInfo{VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR};
+    semFdInfo.semaphore = m_frameDoneSemaphore;
+    semFdInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+    
+    int semFd = -1;
+    VkResult result = vkGetSemaphoreFdKHR(m_device, &semFdInfo, &semFd);
+    if (result == VK_SUCCESS) {
+      m_interopInfo.frame_done_sem_fd = semFd;
+      LOGI("updateInteropInfo: Exported frame done semaphore FD: %d\n", semFd);
+    } else {
+      LOGE("updateInteropInfo: Failed to export frame done semaphore FD: %d\n", result);
+    }
+  }
+  
+  // Update last signaled value with thread safety
+  {
+    std::lock_guard<std::mutex> lock(m_frameValueMutex);
+    m_interopInfo.last_signaled_frame_done = m_lastSignaledPayload;
+  }
+  
+  LOGI("updateInteropInfo: Complete interop info updated - %dx%d, pitch=%d, size=%lu\n",
+       m_interopInfo.width, m_interopInfo.height, m_interopInfo.row_pitch_bytes, 
+       m_interopInfo.depth_mem_size);
+}
+
+// Timeline semaphore coordination methods
+bool ExternalMemoryManager::signalSceneReady(uint64_t value) {
+#ifdef _WIN32
+  return false;
+#else
+  if (m_sceneReadyTimeline == VK_NULL_HANDLE) {
+    LOGE("signalSceneReady: Scene ready timeline semaphore not created\n");
+    return false;
+  }
+  
+  VkSemaphoreSignalInfo signalInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO};
+  signalInfo.semaphore = m_sceneReadyTimeline;
+  signalInfo.value = value;
+  
+  VkResult result = vkSignalSemaphore(m_device, &signalInfo);
+  if (result != VK_SUCCESS) {
+    LOGE("signalSceneReady: Failed to signal scene ready semaphore: %d\n", result);
+    return false;
+  }
+  
+  LOGI("signalSceneReady: Scene ready signaled with value %lu\n", value);
+  return true;
+#endif
+}
+
+bool ExternalMemoryManager::waitSceneReady(uint64_t value, uint32_t timeout_ms) {
+#ifdef _WIN32
+  return false;
+#else
+  if (m_sceneReadyTimeline == VK_NULL_HANDLE) {
+    LOGE("waitSceneReady: Scene ready timeline semaphore not created\n");
+    return false;
+  }
+  
+  VkSemaphoreWaitInfo waitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+  waitInfo.semaphoreCount = 1;
+  waitInfo.pSemaphores = &m_sceneReadyTimeline;
+  waitInfo.pValues = &value;
+  
+  uint64_t timeout_ns = static_cast<uint64_t>(timeout_ms) * 1000000ULL;  // Convert ms to ns
+  VkResult result = vkWaitSemaphores(m_device, &waitInfo, timeout_ns);
+  
+  if (result == VK_TIMEOUT) {
+    LOGE("waitSceneReady: Timeout waiting for scene ready value %lu\n", value);
+    return false;
+  } else if (result != VK_SUCCESS) {
+    LOGE("waitSceneReady: Failed to wait for scene ready semaphore: %d\n", result);
+    return false;
+  }
+  
+  LOGI("waitSceneReady: Successfully waited for scene ready value %lu\n", value);
+  return true;
+#endif
+}
+
+bool ExternalMemoryManager::signalCameraReady(uint64_t value) {
+#ifdef _WIN32
+  return false;
+#else
+  if (m_cameraReadyTimeline == VK_NULL_HANDLE) {
+    LOGE("signalCameraReady: Camera ready timeline semaphore not created\n");
+    return false;
+  }
+  
+  VkSemaphoreSignalInfo signalInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO};
+  signalInfo.semaphore = m_cameraReadyTimeline;
+  signalInfo.value = value;
+  
+  VkResult result = vkSignalSemaphore(m_device, &signalInfo);
+  if (result != VK_SUCCESS) {
+    LOGE("signalCameraReady: Failed to signal camera ready semaphore: %d\n", result);
+    return false;
+  }
+  
+  LOGI("signalCameraReady: Camera ready signaled with value %lu\n", value);
+  return true;
+#endif
+}
+
+bool ExternalMemoryManager::waitCameraReady(uint64_t value, uint64_t timeout_ns) {
+#ifdef _WIN32
+  return false;
+#else
+  if (m_cameraReadyTimeline == VK_NULL_HANDLE) {
+    LOGE("waitCameraReady: Camera ready timeline semaphore not created\n");
+    return false;
+  }
+  
+  VkSemaphoreWaitInfo waitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+  waitInfo.semaphoreCount = 1;
+  waitInfo.pSemaphores = &m_cameraReadyTimeline;
+  waitInfo.pValues = &value;
+  
+  VkResult result = vkWaitSemaphores(m_device, &waitInfo, timeout_ns);
+  if (result != VK_SUCCESS) {
+    if (result == VK_TIMEOUT) {
+      LOGE("waitCameraReady: Timeout waiting for camera ready value %lu\n", value);
+    } else {
+      LOGE("waitCameraReady: Failed to wait for camera ready semaphore: %d\n", result);
+    }
+    return false;
+  }
+  
+  LOGI("waitCameraReady: Successfully waited for camera ready value %lu\n", value);
+  return true;
+#endif
 }
 
 } // namespace lodclusters

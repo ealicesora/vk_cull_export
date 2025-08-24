@@ -127,7 +127,20 @@ class CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS(ctypes.Structure):
         ("reserved", ctypes.c_uint * 16)
     ]
 
-def import_ext_memory_fd(fd: int, size: int, is_dedicated: bool = False) -> ctypes.c_void_p:
+class CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS(ctypes.Structure):
+    """CUDA external semaphore signal parameters"""
+    class Params(ctypes.Union):
+        class Fence(ctypes.Structure):
+            _fields_ = [("value", ctypes.c_ulonglong)]
+        _fields_ = [("fence", Fence)]
+    
+    _fields_ = [
+        ("params", Params),
+        ("flags", ctypes.c_uint),
+        ("reserved", ctypes.c_uint * 16)
+    ]
+
+def import_ext_memory_fd(fd: int, size: int, is_dedicated: bool = False) -> Tuple[ctypes.c_void_p, ctypes.c_void_p]:
     """
     Import Vulkan external memory via file descriptor into CUDA
     
@@ -137,7 +150,7 @@ def import_ext_memory_fd(fd: int, size: int, is_dedicated: bool = False) -> ctyp
         is_dedicated: Whether the memory is dedicated allocation
     
     Returns:
-        CUDA external memory object handle
+        Tuple of (external memory handle, device pointer)
     
     Raises:
         CudaError: If import fails
@@ -165,7 +178,10 @@ def import_ext_memory_fd(fd: int, size: int, is_dedicated: bool = False) -> ctyp
     if result != CUDA_SUCCESS:
         raise CudaError(f"cuImportExternalMemory failed with error {result}")
     
-    return ext_mem
+    # Get device pointer for the full buffer
+    dev_ptr = get_mapped_buffer_pointer(ext_mem, 0, size)
+    
+    return ext_mem, dev_ptr
 
 def import_timeline_semaphore_fd(fd: int) -> ctypes.c_void_p:
     """
@@ -243,14 +259,14 @@ def get_mapped_buffer_pointer(ext_mem: ctypes.c_void_p, offset: int, size: int) 
     
     return dev_ptr
 
-def wait_timeline(ext_sem: ctypes.c_void_p, value: int, stream: Optional[ctypes.c_void_p] = None) -> None:
+def wait_timeline(ext_sem: ctypes.c_void_p, value: int, stream_ptr: int) -> None:
     """
     Wait for timeline semaphore to reach specified value
     
     Args:
         ext_sem: External semaphore handle from import_timeline_semaphore_fd
         value: Timeline value to wait for
-        stream: CUDA stream (default: null stream)
+        stream_ptr: CUDA stream pointer (use 0 for null stream)
     
     Raises:
         CudaError: If wait fails
@@ -271,22 +287,55 @@ def wait_timeline(ext_sem: ctypes.c_void_p, value: int, stream: Optional[ctypes.
     
     result = ctx.libcuda.cuWaitExternalSemaphoresAsync(
         ctypes.byref(ext_sem), ctypes.byref(wait_params), 1,
-        stream if stream else ctypes.c_void_p(0)
+        ctypes.c_void_p(stream_ptr)
     )
     
     if result != CUDA_SUCCESS:
         raise CudaError(f"cuWaitExternalSemaphoresAsync failed with error {result}")
 
-def make_pitched_cupy_array(dev_ptr: ctypes.c_void_p, width: int, height: int, 
-                           pitch: int, dtype: np.dtype) -> Any:
+def signal_timeline(ext_sem: ctypes.c_void_p, value: int, stream_ptr: int) -> None:
+    """
+    Signal timeline semaphore with specified value
+    
+    Args:
+        ext_sem: External semaphore handle from import_timeline_semaphore_fd
+        value: Timeline value to signal
+        stream_ptr: CUDA stream pointer (use 0 for null stream)
+    
+    Raises:
+        CudaError: If signal fails
+    """
+    ctx = get_cuda_context()
+    
+    # Set up signal parameters
+    signal_params = CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS()
+    signal_params.params.fence.value = value
+    signal_params.flags = 0
+    
+    # Signal semaphore
+    ctx.libcuda.cuSignalExternalSemaphoresAsync.argtypes = [
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS),
+        ctypes.c_uint, ctypes.c_void_p
+    ]
+    ctx.libcuda.cuSignalExternalSemaphoresAsync.restype = ctypes.c_int
+    
+    result = ctx.libcuda.cuSignalExternalSemaphoresAsync(
+        ctypes.byref(ext_sem), ctypes.byref(signal_params), 1,
+        ctypes.c_void_p(stream_ptr)
+    )
+    
+    if result != CUDA_SUCCESS:
+        raise CudaError(f"cuSignalExternalSemaphoresAsync failed with error {result}")
+
+def make_pitched_cupy_array(device_ptr: int, row_pitch_bytes: int, width: int, height: int, dtype: np.dtype) -> Any:
     """
     Create CuPy array from CUDA device pointer with row pitch
     
     Args:
-        dev_ptr: CUDA device pointer
+        device_ptr: CUDA device pointer as integer address
+        row_pitch_bytes: Row pitch in bytes
         width: Width in elements
         height: Height in rows
-        pitch: Row pitch in bytes
         dtype: NumPy dtype for the array
     
     Returns:
@@ -301,15 +350,15 @@ def make_pitched_cupy_array(dev_ptr: ctypes.c_void_p, width: int, height: int,
     except ImportError:
         raise ImportError("CuPy is required for pitched array creation")
     
-    if pitch < width * dtype.itemsize:
-        raise ValueError(f"Pitch {pitch} too small for width {width} * itemsize {dtype.itemsize}")
+    if row_pitch_bytes < width * dtype.itemsize:
+        raise ValueError(f"Row pitch {row_pitch_bytes} too small for width {width} * itemsize {dtype.itemsize}")
     
     # Calculate strides: row stride in bytes, column stride is itemsize
-    strides = (pitch, dtype.itemsize)
+    strides = (row_pitch_bytes, dtype.itemsize)
     
-    # Create memory pointer
+    # Create memory pointer from integer device pointer
     memptr = cp.cuda.MemoryPointer(
-        cp.cuda.UnownedMemory(dev_ptr.value, height * pitch, owner=None), 0
+        cp.cuda.UnownedMemory(device_ptr, height * row_pitch_bytes, owner=None), 0
     )
     
     # Create array with custom strides
@@ -399,14 +448,11 @@ def create_zero_copy_depth_tensor(fd: int, width: int, height: int, pitch: int,
     # Calculate buffer size
     buffer_size = height * pitch
     
-    # Import external memory
-    ext_mem = import_ext_memory_fd(fd, buffer_size, is_dedicated)
+    # Import external memory and get device pointer
+    ext_mem, dev_ptr = import_ext_memory_fd(fd, buffer_size, is_dedicated)
     
-    # Get device pointer
-    dev_ptr = get_mapped_buffer_pointer(ext_mem, 0, buffer_size)
-    
-    # Create pitched CuPy array for D24 format (uint32)
-    d24_array = make_pitched_cupy_array(dev_ptr, width, height, pitch, np.uint32)
+    # Create pitched CuPy array for D24 format (uint32) using new signature
+    d24_array = make_pitched_cupy_array(dev_ptr.value, pitch, width, height, np.uint32)
     
     # Convert D24 to float32
     depth_float = depth_d24_to_float(d24_array)
