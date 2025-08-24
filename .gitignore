@@ -58,6 +58,8 @@ python*.log
 *.swo
 *~
 
+_deps/
+
 # Generated files
 zbsgfxpack.lua
 
