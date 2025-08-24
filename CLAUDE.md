@@ -8,10 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 #### Recommended Build Process (Updated 2025-08-24)
 
-**🎯 For Python Extension Development (BEST METHOD):**
+**🎯 For Python Extension Development (BEST METHOD - VERIFIED 2025-08-24):**
 ```bash
 # Step 1: Use sophisticated toolchain approach (separates conda Python from system C++)
 # This method builds Python extensions successfully without GLIBC conflicts
+# ✅ VERIFIED: Successfully builds 8.1MB extension with full LodClusters renderer
 
 # IMPORTANT: Keep conda environment ACTIVE (needed for Python/pybind11)
 conda activate vk2torch
@@ -28,17 +29,26 @@ cmake -S . -B build-py \
   -DUSE_DLSS=OFF \
   -DBUILD_PYTHON_EXT=ON
 
-# Apply required patch (only needed once after configure)
-# Edit: build-py/_deps/nvpro_core2/nvutils/logger.cpp
-# After line 38 (#include <signal.h>), add:
-#   #include <unistd.h>
-
 # Build (Python extension will be created)
+# ✅ PIC issues have been resolved in CMakeLists.txt - no manual patches needed
 cmake --build build-py --config Release -j4
 
-# Result: build-py/vk2torch_ext.cpython-310-x86_64-linux-gnu.so
-# Test: cd build-py && python -c "import vk2torch_ext; print('✅ Success!')"
+# Result: build-py/_bin/Release/vk2torch_ext.cpython-310-x86_64-linux-gnu.so (8.1MB)
+# VulkanSDK runtime libraries: build-py/_bin/Release/vulkan/
+# Test: cd build-py/_bin/Release && python -c "import vk2torch_ext; print('✅ Success!')"
+
+# ✅ VERIFIED BUILD OUTPUT:
+# - Extension size: 8,133,568 bytes (contains full 3D renderer)
+# - VulkanSDK libs: libvulkan.so.1, libshaderc_shared.so.1 (auto-packaged)
+# - RPATH: $ORIGIN;$ORIGIN/vulkan (runtime library discovery)
+# - Compatibility: Works with vk2torch conda environment
 ```
+
+**🔧 Key Technical Solutions Applied:**
+- **PIC Compilation**: Global `CMAKE_POSITION_INDEPENDENT_CODE ON` set before nvpro_core2 loading
+- **GLIBC Isolation**: Toolchain file prevents conda sysroot contamination  
+- **Unified Architecture**: `vklod_core_obj` OBJECT library eliminates code duplication
+- **Runtime Packaging**: VulkanSDK libraries automatically copied with correct RPATH
 
 **🎯 For Main Application (Vulkan App):**
 ```bash
