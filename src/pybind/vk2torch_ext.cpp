@@ -36,9 +36,12 @@
 // Vulkan and nvpro_core2 includes
 #include <vulkan/vulkan.h>
 #include <nvvk/context.hpp>
+#include <nvvk/check_error.hpp>
+#include <nvvk/debug_util.hpp>
 #include <nvapp/application.hpp>
 #include <nvutils/logger.hpp>
 #include <nvutils/camera_manipulator.hpp>
+#include <filesystem>
 
 // Project includes
 #include "core/context_bootstrap.hpp"
@@ -192,7 +195,10 @@ private:
     std::unique_ptr<lodclusters::ExternalMemoryManager> m_externalMemory;
     std::shared_ptr<lodclusters::ElementPyBridge> m_pybridge;
     std::shared_ptr<lodclusters::LodClusters> m_lodclusters;
-    
+    std::unique_ptr<nvutils::ProfilerManager>   m_profilerManager;
+    std::unique_ptr<nvutils::ParameterRegistry> m_parameterRegistry;
+
+
     // Threading and synchronization
     std::thread m_renderThread;
     std::atomic<bool> m_running{false};
@@ -207,14 +213,92 @@ private:
     void initializeVulkan() {
         printf("Vk2TorchApp: Initializing Vulkan context...\n");
         
-        // Create Vulkan context with external memory support
-        core::BootstrapConfig config;
-        config.needExternalInterop = true;  // Always need FD export for Python
-        config.forcedGpuIndex = -1;         // Auto-select GPU
-        config.enableValidation = false;    // Disable validation for performance
+        // 1) Initialize Volk
+        NVVK_CHECK(volkInitialize());
         
-        core::BootstrapResult result = core::createVulkanContext(config);
-        m_vkContext = std::move(result.ctx);
+        // Feature structures (same as context_bootstrap.cpp)
+        VkPhysicalDeviceMeshShaderFeaturesNV meshNV = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_NV};
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR accKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+        VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
+        VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR rayPosKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR};
+        VkPhysicalDeviceRayQueryFeaturesKHR rayQueryKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+        VkPhysicalDeviceClusterAccelerationStructureFeaturesNV clustersNV = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV};
+        VkPhysicalDeviceShaderClockFeaturesKHR clockKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR};
+        VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloatFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
+        VkPhysicalDeviceFragmentShadingRateFeaturesKHR shadingRateFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR};
+        VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR barycentricFeatures{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR};
+
+        // Setup context info - headless mode, no surface extensions needed
+        nvvk::ContextInitInfo vkSetup{
+            .instanceExtensions = {},  // Start empty for headless
+            .deviceExtensions   = {},  // No swapchain for headless
+            .queues             = {VK_QUEUE_GRAPHICS_BIT, VK_QUEUE_TRANSFER_BIT},
+        };
+        
+        vkSetup.enableValidationLayers = false;  // Disable validation for performance
+        vkSetup.forceGPU = -1;  // Auto-select GPU
+        
+        // Add standard device extensions
+        vkSetup.deviceExtensions.push_back({VK_NV_MESH_SHADER_EXTENSION_NAME, &meshNV});
+        vkSetup.deviceExtensions.push_back({VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME, nullptr, false});
+        vkSetup.deviceExtensions.push_back({VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME, &accKHR, false});
+        vkSetup.deviceExtensions.push_back({VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, &rayKHR, false});
+        vkSetup.deviceExtensions.push_back({VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME, &rayPosKHR, false});
+        vkSetup.deviceExtensions.push_back({VK_KHR_RAY_QUERY_EXTENSION_NAME, &rayQueryKHR, false});
+        vkSetup.deviceExtensions.push_back({VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME, &clustersNV, false, 2});
+        vkSetup.deviceExtensions.push_back({VK_KHR_SHADER_CLOCK_EXTENSION_NAME, &clockKHR, false});
+        vkSetup.deviceExtensions.push_back({VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, &atomicFloatFeatures, false});
+        vkSetup.deviceExtensions.push_back({VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME, &shadingRateFeatures, false});
+        vkSetup.deviceExtensions.push_back({VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME, &barycentricFeatures, false});
+        vkSetup.deviceExtensions.push_back({VK_NV_SHADER_SUBGROUP_PARTITIONED_EXTENSION_NAME, nullptr, false});
+
+        // Add external memory extensions (needed for CUDA interop)
+        printf("Vk2TorchApp: Adding external memory extensions for interop\n");
+        for (const auto& ext : lodclusters::ExternalMemoryManager::getRequiredDeviceExtensions()) {
+            vkSetup.deviceExtensions.push_back({ext, nullptr, false});
+        }
+
+        // 3) Optional: Filter available instance extensions (insurance against any residual extensions)
+        auto& inst = vkSetup.instanceExtensions;
+        uint32_t cnt = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &cnt, nullptr);
+        std::vector<VkExtensionProperties> props(cnt);
+        if (cnt) vkEnumerateInstanceExtensionProperties(nullptr, &cnt, props.data());
+        {
+            std::vector<const char*> keep;
+            for (const char* e : inst) {
+                bool found = false;
+                for (auto &p: props) if (!strcmp(p.extensionName, e)) { found = true; break; }
+                if (found) keep.push_back(e);
+                else fprintf(stderr, "[vk2torch] drop unavailable instance ext: %s\n", e);
+            }
+            inst.swap(keep);
+        }
+        fprintf(stderr, "[vk2torch] final instanceExtensions count = %zu\n", inst.size());
+
+        m_vkContext.contextInfo = vkSetup;
+        
+        // 4) Create Instance (with fallback to empty extensions if needed)
+        printf("Vk2TorchApp: Creating Vulkan Instance\n");
+        VkResult r = m_vkContext.createInstance();
+        if (r == VK_ERROR_EXTENSION_NOT_PRESENT) {
+            fprintf(stderr, "[vk2torch] EXT_NOT_PRESENT: retry with EMPTY instance extensions\n");
+            // Clear extensions and create new Context
+            vkSetup.instanceExtensions.clear();
+            nvvk::Context newContext;
+            newContext.contextInfo = vkSetup;
+            NVVK_CHECK(newContext.createInstance());
+            m_vkContext = std::move(newContext);
+        } else {
+            NVVK_CHECK(r);
+        }
+        
+        NVVK_CHECK(m_vkContext.selectPhysicalDevice());
+        NVVK_CHECK(m_vkContext.createDevice());
+        
+        nvvk::DebugUtil::getInstance().init(m_vkContext.getDevice());
         
         printf("Vk2TorchApp: Vulkan context created successfully\n");
     }
@@ -258,9 +342,14 @@ private:
         // Create LodClusters element for real 3D scene rendering
         printf("Vk2TorchApp: Creating LodClusters for real scene rendering...\n");
         lodclusters::LodClusters::Info lodInfo;
+
+        m_profilerManager   = std::make_unique<nvutils::ProfilerManager>();
+        m_parameterRegistry = std::make_unique<nvutils::ParameterRegistry>();
+        m_cameraManipulator = std::make_shared<nvutils::CameraManipulator>();
+
         lodInfo.cameraManipulator = m_cameraManipulator;
-        lodInfo.profilerManager = nullptr;  // No profiler needed for headless
-        lodInfo.parameterRegistry = nullptr;  // Use defaults
+        lodInfo.profilerManager = m_profilerManager.get();  // No profiler needed for headless
+        lodInfo.parameterRegistry = m_parameterRegistry.get();  // Use defaults
         lodInfo.externalMemoryManager = m_externalMemory.get();  // Connect to external memory
         
         m_lodclusters = std::make_shared<lodclusters::LodClusters>(lodInfo);
