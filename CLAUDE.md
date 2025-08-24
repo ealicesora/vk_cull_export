@@ -208,6 +208,81 @@ vulkaninfo | head -20
 ldd _bin/Release/vk_lod_clusters
 ```
 
+## Asset Resolution System (NEW - 2025-08-24)
+
+### Unified Asset Resolution Architecture
+The codebase implements a sophisticated asset resolution system to handle shader and model loading with absolute path requirements, particularly important for Python integration where working directory dependencies must be eliminated.
+
+**Key Components:**
+- **Asset Resolver** (`src/asset_resolver.hpp/cpp`): Unified path resolution for shaders and models
+- **Search Path Management**: Configurable search paths for different asset types
+- **Absolute Path Enforcement**: Critical for Python extension compatibility
+
+### Asset Resolution API
+```cpp
+// Core asset resolution functions
+std::filesystem::path resolve_shader(const std::filesystem::path& root, std::string_view rel);
+std::filesystem::path resolve_model(const std::filesystem::path& root, std::string_view rel);
+
+// Usage examples:
+auto shader_path = assets::resolve_shader(m_assetRoot, "hbao_depthlinearize.comp.glsl");
+auto model_path = assets::resolve_model(m_assetRoot, "house_new.glb");
+```
+
+### Shader Compilation Integration
+**Critical Implementation Details:**
+- **GlslCompiler Search Paths**: Must be configured BEFORE shader compilation
+- **Initialization Order**: `Resources::setAssetRoot()` → configure search paths → `HbaoPass::setAssetRoot()` → reload shaders
+- **Absolute Path Requirement**: shaderc requires absolute paths for reliable compilation
+- **Include Resolution**: GLSL `#include` directives resolved via nvpro_core2's GlslIncluder
+
+**Working Pattern in Resources::setAssetRoot():**
+```cpp
+// Step 1: Add search paths to GlslCompiler FIRST
+std::vector<std::filesystem::path> shaderPaths = {
+  assetRoot, assetRoot / "shaders", assetRoot / "resources"
+};
+m_glslCompiler.addSearchPaths(shaderPaths);
+
+// Step 2: THEN trigger shader reload in dependent components
+m_hbaoPass.setAssetRoot(assetRoot);
+```
+
+### Python Integration Benefits
+- **Working Directory Independence**: Python can pass absolute asset_root without requiring specific CWD
+- **Conda Environment Compatibility**: Works regardless of where Python process is launched
+- **Error Prevention**: Eliminates "File not found" errors when shaders reference includes via relative paths
+
+### Shader Loading Architecture
+**HBAO Pass Integration:**
+- Deferred shader compilation until `setAssetRoot()` called
+- Uses GlslCompiler's default options (includes proper includer configuration)
+- All 7 HBAO shaders compile successfully: depthlinearize, viewnormal, blur, blur_apply, calc, deinterleave, reinterleave
+
+**NVHIZ Integration:**
+- Dynamic shader loading via asset resolver for nvhiz-update.comp.glsl variants
+- Supports multiple shader variants for different GPU capabilities
+
+### Testing Asset Resolution
+```python
+# Python test pattern for asset resolution validation
+import vk2torch_ext
+import os
+
+# Get absolute asset root (critical for reliable operation)  
+root = os.path.abspath('path/to/assets')
+print(f'[test] using asset_root = {root}')
+
+# Extension handles absolute paths correctly
+app = vk2torch_ext.Vk2TorchApp(512, 512, True, "house_new.glb", str(root))
+```
+
+### Common Asset Resolution Issues & Solutions
+- **"File not found" shader errors**: Ensure asset resolver returns absolute paths, not relative
+- **Include resolution failures**: Verify GlslCompiler search paths configured before shader compilation  
+- **Python working directory issues**: Always pass absolute asset_root from Python
+- **Initialization order problems**: Configure search paths before calling shader reload methods
+
 ## Architecture Overview
 
 ### Core Application Structure
@@ -362,6 +437,8 @@ ldd _bin/Release/vk_lod_clusters
 - **Out of memory during processing**: Use `--processingonly 1 --processingthreadpct 0.1`
 - **Poor performance**: Disable validation with `--validation 0`
 - **Ray tracing not working**: Requires RTX GPU and driver 572.16+, fallback to `--renderer 0`
+- **"Shader not found" at runtime**: Verify asset resolver configured properly, check absolute path resolution
+- **HBAO effects not working**: Check if `VK2TORCH_DISABLE_HBAO` environment variable is set, ensure shaders compiled successfully
 
 ### Performance Optimization
 - Use Release builds for performance testing
@@ -540,6 +617,8 @@ The Python integration implements a **zero-copy GPU-to-GPU pipeline**:
 - **"Vulkan hangs after 2-3 frames"**: Known issue with timeline semaphore signaling, use window mode instead of offscreen
 - **"Device lost errors"**: Indicates duplicate timeline semaphore signaling - fixed in current implementation
 - **"NVIDIA Xid 39 errors"**: GPU errors from invalid commands - ensure not running old versions with duplicate signaling bug
+- **"Shader not found" errors**: Verify asset resolver returning absolute paths and GlslCompiler search paths configured
+- **"HBAO compilation failed"**: Check that `setAssetRoot()` called before shader compilation, verify hbao.h include resolution
 
 ## Development Workflow
 
@@ -551,11 +630,13 @@ The Python integration implements a **zero-copy GPU-to-GPU pipeline**:
 - **Bootstrap Pattern**: Vulkan context creation centralized in `core::createVulkanContext()` to avoid code duplication
 - **Element Architecture**: All UI and integration components inherit from `nvapp::IAppElement` (onAttach/onDetach/onRender lifecycle)
 - **Memory Management**: VMA (Vulkan Memory Allocator) implementation centralized in `src/thirdparty/vma_impl.cpp` to prevent ODR violations
+- **Asset Resolution Pattern**: Unified asset resolver (`src/asset_resolver.hpp/cpp`) eliminates working directory dependencies
 - **Directory Structure**: 
   - `src/core/`: Core infrastructure (bootstrap, context management)
   - `src/pybridge/`: Python integration elements and bridges
   - `src/pybind/`: pybind11 extension module implementation
   - `src/thirdparty/`: Third-party library implementations (VMA, etc.)
+  - `shaders/`: GLSL shaders with shared headers for host-device communication
 
 ### Testing Strategy
 - **Unit Tests**: Individual component tests in `python/test_*.py` for isolated functionality
@@ -576,6 +657,9 @@ vulkaninfo --summary && ./_bin/Release/vk_lod_clusters --streaming 1 --gridcopie
 
 # Check Python client connectivity without CUDA dependencies
 python python/test_optimizations.py /tmp/debug.sock
+
+# Test asset resolution system
+python debug_vk2torch.py  # Uses absolute asset_root path
 ```
 
 ### Important Implementation Notes
@@ -584,6 +668,9 @@ python python/test_optimizations.py /tmp/debug.sock
 - **GPU UUID Validation**: Multi-GPU systems require UUID matching between Vulkan and CUDA contexts for zero-copy functionality
 - **File Descriptor Management**: Unix domain sockets use SCM_RIGHTS for FD passing - ensure proper cleanup to avoid leaks
 - **Socket Communication**: The system minimizes per-frame socket overhead by using shared memory for camera data and GPU timeline semaphores for synchronization. Only fallback to socket communication if shared memory fails.
+- **Asset Resolution Timing**: GlslCompiler search paths must be configured before any shader compilation - failing to do this causes "File not found" errors
+- **Absolute Path Requirement**: Python integration requires absolute asset_root paths for reliable operation across different working directories
+- **Shader Compilation Order**: HBAO and NVHIZ shaders are compiled on-demand when setAssetRoot() is called, not during init()
 
 ### Extension Points
 - **Custom Renderers**: Inherit from base `Renderer` class and integrate with `LodClusters::createRenderer()`

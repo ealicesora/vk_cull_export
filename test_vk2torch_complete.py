@@ -136,7 +136,12 @@ def test_basic_functionality(app):
             [0.0, 0.0, -1.0, 0.0]
         ], dtype=np.float32)
         
-        app.set_camera(view_matrix, proj_matrix)
+        # Convert numpy arrays to lists (expected by pybind11 binding)
+        view_list = view_matrix.flatten().tolist()
+        proj_list = proj_matrix.flatten().tolist()
+        
+        # Call with frame number (0), view matrix, and projection matrix
+        app.set_camera(0, view_list, proj_list)
         print("✅ Camera setup successful")
         
         # Test method availability
