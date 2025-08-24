@@ -24,6 +24,7 @@
 #include <nvvk/formats.hpp>
 
 #include "resources.hpp"
+#include "asset_resolver.hpp"
 
 namespace lodclusters {
 
@@ -210,9 +211,16 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
     shaderc::SpvCompilationResult shaderResults[NVHizVK::SHADER_COUNT];
     for(uint32_t i = 0; i < NVHizVK::SHADER_COUNT; i++)
     {
+      // Get asset root and resolve shader path
+      auto assetRoot = m_assetRoot.empty() ? lodclusters::get_default_asset_root() : m_assetRoot;
+      auto nvhiz_path = lodclusters::resolve_asset(assetRoot, "nvhiz-update.comp.glsl");
+      
+      // Add include directories before compilation
       shaderc::CompileOptions options = makeCompilerOptions();
+      lodclusters::add_glsl_includes(m_glslCompiler, assetRoot, nvhiz_path);
       m_hiz.appendShaderDefines(i, options);
-      compileShader(shaderResults[i], VK_SHADER_STAGE_COMPUTE_BIT, "nvhiz-update.comp.glsl", &options);
+      
+      compileShader(shaderResults[i], VK_SHADER_STAGE_COMPUTE_BIT, nvhiz_path, &options);
     }
     m_hiz.initPipelines(shaderResults);
   }
@@ -231,6 +239,12 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
     m_queueStates.transfer.init(m_device, m_queueTransfer.queue, m_queueTransfer.familyIndex, 0);
     NVVK_DBG_NAME(m_queueStates.transfer.m_timelineSemaphore);
   }
+}
+
+void Resources::setAssetRoot(const std::filesystem::path& assetRoot)
+{
+  m_assetRoot = assetRoot;
+  m_hbaoPass.setAssetRoot(assetRoot);
 }
 
 void Resources::deinit()

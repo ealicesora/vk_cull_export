@@ -111,17 +111,22 @@ public:
      * @param height Render target height
      * @param raster Whether to use rasterization (true) or ray tracing (false)
      * @param scene_path Path to GLTF scene file (default: "matrix_city.glb")
+     * @param asset_root Absolute path to asset root directory (default: auto-detect)
      */
-    Vk2TorchApp(int width, int height, bool raster = true, const std::string& scene_path = "matrix_city.glb")
+    Vk2TorchApp(int width, int height, bool raster = true, const std::string& scene_path = "matrix_city.glb", const std::string& asset_root = "")
         : m_width(width), m_height(height), m_raster(raster), m_scene_path(scene_path)
     {
         pybind11::gil_scoped_release release;  // Release GIL during initialization
         
         try {
             // Initialize asset root directory
-            m_assetRoot = default_asset_root();
+            if(!asset_root.empty()) {
+                m_assetRoot = std::filesystem::path(asset_root);
+            } else {
+                m_assetRoot = default_asset_root(); // 现有函数可继续用
+            }
             m_assetRootStr = m_assetRoot.string();
-            printf("[vk2torch] assetRoot = %s\n", m_assetRoot.string().c_str());
+            printf("[vk2torch] assetRoot = %s\n", m_assetRootStr.c_str());
             
             initializeVulkan();
             createApplication();
@@ -545,10 +550,10 @@ PYBIND11_MODULE(vk2torch_ext, m) {
     m.doc() = "VK2Torch Extension - In-process Vulkan to PyTorch integration";
 
     py::class_<Vk2TorchApp>(m, "Vk2TorchApp")
-        .def(py::init<int, int, bool, const std::string&>(),
+        .def(py::init<int, int, bool, const std::string&, const std::string&>(),
              "Create Vk2TorchApp instance with headless Application",
              py::arg("width"), py::arg("height"), 
-             py::arg("raster") = true, py::arg("scene_path") = "")
+             py::arg("raster") = true, py::arg("scene_path") = "", py::arg("asset_root") = "")
         
         // Dimensions and buffer info
         .def("size", &Vk2TorchApp::size,

@@ -134,6 +134,7 @@ public:
   void setSupportsClusters(bool supported) { m_resources.m_supportsClusters = supported; }
   void setExternalMemoryManager(ExternalMemoryManager* manager);
   bool getShowDebugUI() const { return m_showDebugUI; }
+  const std::filesystem::path& getAssetRoot() const { return m_assetRoot; }
 
 private:
   VkExtent2D                 m_windowSize;

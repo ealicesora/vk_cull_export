@@ -22,29 +22,35 @@
 #include <filesystem>
 #include <string>
 #include <cstdlib>
+#include <nvvkglsl/glsl.hpp>
 
 namespace lodclusters {
 
 // 通用资源解析：给定相对文件，自动在若干常见子目录查找
-inline std::filesystem::path resolve_asset(const std::filesystem::path& assetRoot,
+inline std::filesystem::path resolve_asset(const std::filesystem::path& root,
                                            const std::string& rel) {
   using std::filesystem::path;
-  const path base = assetRoot;
+  const path r = root;
   const path relp = rel;
-  const path candidates[] = {
-    base / relp,
-    base / "shaders" / relp,
-    base / "shaders/hbao" / relp,
-    base / "post" / relp,
-    base / "glsl" / relp,
-    // Fallback to current directory structure
-    path("shaders") / relp,
-    path(".") / "shaders" / relp
+  const path cands[] = {
+    r / relp,
+    r / "shaders" / relp
   };
-  for (auto& c : candidates) {
-    if (std::filesystem::exists(c)) return c;
-  }
-  return relp; // 兜底：返回原样，供旧逻辑报错时打印
+  for (auto& c : cands) if (std::filesystem::exists(c)) return c;
+  return r / relp; // 兜底
+}
+
+// 公共的"给编译器加 include 目录"的工具
+inline void add_glsl_includes(nvvkglsl::GlslCompiler& comp,
+                              const std::filesystem::path& assetRoot,
+                              const std::filesystem::path& filePath){
+  // Add search paths: asset root, shaders subdirectory, and file's parent directory
+  std::vector<std::filesystem::path> searchPaths = {
+    assetRoot,
+    assetRoot / "shaders",
+    filePath.parent_path()
+  };
+  comp.addSearchPaths(searchPaths);
 }
 
 // 获取默认资产根目录

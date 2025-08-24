@@ -158,8 +158,8 @@ bool HbaoPass::reloadShaders()
     return false; // Gracefully disabled
   }
 
-  // Get asset root and resolve shader paths
-  auto assetRoot = lodclusters::get_default_asset_root();
+  // Get asset root (use set root or default)
+  auto assetRoot = m_assetRoot.empty() ? lodclusters::get_default_asset_root() : m_assetRoot;
   bool state = true;
   
   // Try to compile all HBAO shaders with asset resolution
@@ -170,6 +170,9 @@ bool HbaoPass::reloadShaders()
   auto calc_path = lodclusters::resolve_asset(assetRoot, "hbao_calc.comp.glsl");
   auto deinterleave_path = lodclusters::resolve_asset(assetRoot, "hbao_deinterleave.comp.glsl");
   auto reinterleave_path = lodclusters::resolve_asset(assetRoot, "hbao_reinterleave.comp.glsl");
+
+  // Add include directories before compilation
+  lodclusters::add_glsl_includes(*m_glslCompiler, assetRoot, depth_linearize_path);
 
   state = compileShader(m_glslCompiler, m_shaders.depth_linearize, VK_SHADER_STAGE_COMPUTE_BIT, depth_linearize_path) && state;
   state = compileShader(m_glslCompiler, m_shaders.viewnormal, VK_SHADER_STAGE_COMPUTE_BIT, viewnormal_path) && state;

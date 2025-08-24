@@ -39,6 +39,7 @@
 #include <nvvk/profiler_vk.hpp>
 #include <nvvkglsl/glsl.hpp>
 #include <vk_radix_sort.h>
+#include <filesystem>
 
 #if VK_HEADER_VERSION < 309
 #error Update Vulkan SDK >= 1.4.309.0
@@ -278,6 +279,7 @@ public:
 
   void init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstance instance, const nvvk::QueueInfo& queue, const nvvk::QueueInfo& queueTransfer);
   void deinit();
+  void setAssetRoot(const std::filesystem::path& assetRoot);
 
   bool initFramebuffer(const VkExtent2D& windowSize, int supersample, bool hbaoFullRes);
   void updateFramebufferRenderSizeDependent(VkCommandBuffer cmd);
@@ -542,6 +544,9 @@ public:
   bool            m_hbaoFullRes = false;
   HbaoPass        m_hbaoPass;
   HbaoPass::Frame m_hbaoFrame;
+  
+  // Asset root for shader loading
+  std::filesystem::path m_assetRoot;
 
   NVHizVK                       m_hiz;
   NVHizVK::Update               m_hizUpdate;

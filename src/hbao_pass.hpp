@@ -27,6 +27,7 @@
 #include <nvvk/resource_allocator.hpp>
 #include <nvvk/sampler_pool.hpp>
 #include <glm/glm.hpp>
+#include <filesystem>
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -49,6 +50,7 @@ public:
   };
 
   bool init(nvvk::ResourceAllocator* allocator, nvvk::SamplerPool* samplerPool, nvvkglsl::GlslCompiler* glslCompiler, const Config& config);
+  void setAssetRoot(const std::filesystem::path& assetRoot) { m_assetRoot = assetRoot; }
   bool reloadShaders();
   void deinit();
 
@@ -137,6 +139,7 @@ private:
   nvvk::ResourceAllocator* m_allocator{};
   nvvk::SamplerPool*       m_samplerPool{};
   nvvkglsl::GlslCompiler*  m_glslCompiler{};
+  std::filesystem::path    m_assetRoot;
 
   uint64_t m_slotsUsed = {};
   Config   m_config;

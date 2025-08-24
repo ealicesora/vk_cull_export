@@ -446,6 +446,11 @@ void LodClusters::onAttach(nvapp::Application* app)
 
   m_profilerGpuTimer.init(m_profilerTimeline, app->getDevice(), app->getPhysicalDevice(), app->getQueue(0).familyIndex, true);
   m_resources.init(app->getDevice(), app->getPhysicalDevice(), app->getInstance(), app->getQueue(0), app->getQueue(1));
+  
+  // Set asset root for shader passes
+  if(!m_assetRoot.empty()) {
+    m_resources.setAssetRoot(m_assetRoot);
+  }
 
   {
     NVVK_CHECK(m_resources.m_samplerPool.acquireSampler(m_imguiSampler));
