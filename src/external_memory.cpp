@@ -1112,6 +1112,9 @@ bool ExternalMemoryManager::signalFrameDone(uint64_t frameNumber, VkQueue queue)
     return false;
   }
 
+  // T3 requirement: Track the last signaled timeline value
+  setLastSignaled(frameNumber);
+
   return true;
 #endif
 }
@@ -1581,8 +1584,11 @@ DepthExportInfo ExternalMemoryManager::getDepthExportInfo() const {
   info.memory_fd = exportDepthBufferFdDup();
   info.timeline_semaphore_fd = exportFrameDoneSemaphoreFdDup();
   
-  // Get current timeline semaphore value
-  info.last_signaled_payload = getCurrentFrameNumber();
+  // Get last signaled timeline semaphore value  
+  {
+    std::lock_guard<std::mutex> lock(m_frameValueMutex);
+    info.last_signaled_payload = m_lastSignaledPayload;
+  }
   
   return info;
 }
@@ -1600,6 +1606,12 @@ void ExternalMemoryManager::setCurrentFrameValue(uint64_t v) {
 uint64_t ExternalMemoryManager::currentFrameValue() const {
   std::lock_guard<std::mutex> lock(m_frameValueMutex);
   return m_currentFrameValue;
+}
+
+// T3 requirement: Set last signaled timeline payload
+void ExternalMemoryManager::setLastSignaled(uint64_t payload) {
+  std::lock_guard<std::mutex> lock(m_frameValueMutex);
+  m_lastSignaledPayload = payload;
 }
 
 } // namespace lodclusters

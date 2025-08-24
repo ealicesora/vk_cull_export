@@ -83,6 +83,10 @@ public:
   // Export info aggregation for pybind11 integration
   DepthExportInfo getDepthExportInfo() const;
 
+  // T3 requirements: Timeline semaphore access and payload tracking
+  VkSemaphore frameDoneTimeline() const { return m_frameDoneSemaphore; }
+  void setLastSignaled(uint64_t payload);
+
   // Create exportable resources
   bool createExportableBuffer(VkDeviceSize size, VkBufferUsageFlags usage, 
                               VkBuffer* buffer, VkDeviceMemory* memory, int* fd, 
@@ -225,6 +229,9 @@ private:
   int m_frameDoneSemaphoreFd = -1;
   uint32_t m_actualRowPitch = 0;  // Actual row pitch in bytes
   bool m_inProcessMode = false;   // Track if initialized in in-process mode
+  
+  // T3 requirement: Track last signaled timeline payload
+  uint64_t m_lastSignaledPayload = 0;
   
   // Shared memory for camera matrices
   int m_shmFd = -1;
