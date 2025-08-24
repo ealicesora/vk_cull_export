@@ -2,6 +2,15 @@ cmake_minimum_required(VERSION 3.22 FATAL_ERROR)
 get_filename_component(PROJECT_NAME ${CMAKE_CURRENT_SOURCE_DIR} NAME)
 project(${PROJECT_NAME} LANGUAGES C CXX)
 
+# Global PIC setting for Python extension compatibility - MUST BE SET BEFORE nvpro_core2
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
+
+# Force PIC for ALL targets (including third-party dependencies)
+set_property(GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS TRUE)
+set_property(GLOBAL PROPERTY POSITION_INDEPENDENT_CODE ON)
+
 option(NVPRO2_ENABLE_nvgl OFF)
 option(NVPRO2_ENABLE_nvgpu_monitor OFF)
 option(NVPRO2_ENABLE_nvslang OFF)
@@ -22,7 +31,7 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 set(CMAKE_CXX_STANDARD 20)
 
 # C2) 全局 PIC & 编译器配置 (Global PIC and compiler configuration)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# PIC already set globally at top of file - removed duplicate
 
 # RPATH settings to avoid conda library conflicts
 set(CMAKE_SKIP_RPATH OFF)
