@@ -26,6 +26,7 @@
 #include <nvvk/context.hpp>
 #include <nvvk/profiler_vk.hpp>
 #include <nvgui/enum_registry.hpp>
+#include <filesystem>
 
 #include "renderer.hpp"
 #include "external_memory.hpp"
@@ -114,6 +115,7 @@ public:
     nvutils::ParameterRegistry*                 parameterRegistry{};
     std::shared_ptr<nvutils::CameraManipulator> cameraManipulator;
     ExternalMemoryManager*                      externalMemoryManager{};
+    const char* assetRoot = nullptr; // 新增：资源根目录
   };
 
   LodClusters(const Info& info);
@@ -139,6 +141,9 @@ private:
   nvutils::ProfilerTimeline* m_profilerTimeline{};
   nvvk::ProfilerGpuTimer     m_profilerGpuTimer{};
   nvapp::Application*        m_app{};
+  
+  // Asset path management
+  std::filesystem::path      m_assetRoot;
 
   //////////////////////////////////////////////////////////////////////////
 

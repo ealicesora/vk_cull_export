@@ -42,6 +42,8 @@
 #include <nvutils/logger.hpp>
 #include <nvutils/camera_manipulator.hpp>
 #include <filesystem>
+#include <cstdlib>
+#include <dlfcn.h>
 
 // Project includes
 #include "core/context_bootstrap.hpp"
@@ -49,6 +51,51 @@
 #include "external_memory.hpp"
 #include "lodclusters.hpp"
 #include "scene.hpp"
+
+// Asset path resolution utility functions
+static std::filesystem::path module_dir() {
+  Dl_info info{};
+  dladdr((void*)&module_dir, &info);
+  std::filesystem::path p(info.dli_fname ? info.dli_fname : "");
+  return p.empty() ? std::filesystem::current_path() : p.parent_path();
+}
+
+static std::filesystem::path default_asset_root() {
+#ifndef VK2TORCH_SOURCE_DIR
+#define VK2TORCH_SOURCE_DIR ""
+#endif
+  // 优先环境变量，其次编译期内置源目录/resources，再其次.so同级的resources
+  const char* env = std::getenv("VK2TORCH_DATA_ROOT");
+  if(env && *env) return std::filesystem::path(env);
+  if constexpr (sizeof(VK2TORCH_SOURCE_DIR) > 1) {
+    auto p = std::filesystem::path(VK2TORCH_SOURCE_DIR) / "resources";
+    if (std::filesystem::exists(p)) return p;
+  }
+  auto p = module_dir() / "resources";
+  if (std::filesystem::exists(p)) return p;
+  // 再退一步：.so 上级两层找 resources（适配 build 目录结构）
+  auto p2 = module_dir().parent_path().parent_path() / "resources";
+  return p2;
+}
+
+// 通用资源解析：给定相对文件，自动在若干常见子目录查找
+static std::filesystem::path resolve_asset(const std::filesystem::path& assetRoot,
+                                           const std::string& rel) {
+  using std::filesystem::path;
+  const path base = assetRoot;
+  const path relp = rel;
+  const path candidates[] = {
+    base / relp,
+    base / "shaders" / relp,
+    base / "shaders/hbao" / relp,
+    base / "post" / relp,
+    base / "glsl" / relp
+  };
+  for (auto& c : candidates) {
+    if (std::filesystem::exists(c)) return c;
+  }
+  return relp; // 兜底：返回原样，供旧逻辑报错时打印
+}
 
 /**
  * Vk2TorchApp - Main interface class for in-process VK2Torch integration
@@ -71,6 +118,11 @@ public:
         pybind11::gil_scoped_release release;  // Release GIL during initialization
         
         try {
+            // Initialize asset root directory
+            m_assetRoot = default_asset_root();
+            m_assetRootStr = m_assetRoot.string();
+            printf("[vk2torch] assetRoot = %s\n", m_assetRoot.string().c_str());
+            
             initializeVulkan();
             createApplication();
             startRenderThread();  // Scene will be loaded inside render thread
@@ -197,6 +249,10 @@ private:
     std::shared_ptr<lodclusters::LodClusters> m_lodclusters;
     std::unique_ptr<nvutils::ProfilerManager>   m_profilerManager;
     std::unique_ptr<nvutils::ParameterRegistry> m_parameterRegistry;
+    
+    // Asset path management
+    std::filesystem::path m_assetRoot;
+    std::string m_assetRootStr;  // For stable pointer access
 
 
     // Threading and synchronization
@@ -351,6 +407,7 @@ private:
         lodInfo.profilerManager = m_profilerManager.get();  // No profiler needed for headless
         lodInfo.parameterRegistry = m_parameterRegistry.get();  // Use defaults
         lodInfo.externalMemoryManager = m_externalMemory.get();  // Connect to external memory
+        lodInfo.assetRoot = m_assetRootStr.c_str();  // Pass asset root for shader loading
         
         m_lodclusters = std::make_shared<lodclusters::LodClusters>(lodInfo);
         m_lodclusters->setSupportsClusters(m_vkContext.hasExtensionEnabled(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME));

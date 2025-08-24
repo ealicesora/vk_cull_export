@@ -30,6 +30,7 @@
 #include <nvutils/logger.hpp>
 
 #include "hbao_pass.hpp"
+#include "asset_resolver.hpp"
 #include "../shaders/hbao.h"
 
 
@@ -122,6 +123,14 @@ static bool compileShader(nvvkglsl::GlslCompiler*        compiler,
                           const std::filesystem::path&   filePath,
                           shaderc::CompileOptions*       options = nullptr)
 {
+  // Check if file exists before trying to compile
+  if(!std::filesystem::exists(filePath))
+  {
+    nvutils::Logger::getInstance().log(nvutils::Logger::LogLevel::eWARNING, 
+                                       "Shader file not found: %s", filePath.string().c_str());
+    return false;
+  }
+
   compiled = compiler->compileFile(filePath, nvvkglsl::getShaderKind(shaderStage), options);
   if(compiled.GetCompilationStatus() == shaderc_compilation_status_success)
   {
@@ -138,15 +147,44 @@ static bool compileShader(nvvkglsl::GlslCompiler*        compiler,
 
 bool HbaoPass::reloadShaders()
 {
+  // Check for HBAO disable flag
+  bool enableHBAO = true;
+  if(const char* v = std::getenv("VK2TORCH_DISABLE_HBAO")) {
+    enableHBAO = (std::atoi(v) == 0); // 1=禁用
+  }
+  
+  if(!enableHBAO) {
+    nvutils::Logger::getInstance().log(nvutils::Logger::LogLevel::eINFO, "HBAO disabled by env VK2TORCH_DISABLE_HBAO");
+    return false; // Gracefully disabled
+  }
+
+  // Get asset root and resolve shader paths
+  auto assetRoot = lodclusters::get_default_asset_root();
   bool state = true;
-  state = compileShader(m_glslCompiler, m_shaders.depth_linearize, VK_SHADER_STAGE_COMPUTE_BIT, "hbao_depthlinearize.comp.glsl")
-          && state;
-  state = compileShader(m_glslCompiler, m_shaders.viewnormal, VK_SHADER_STAGE_COMPUTE_BIT, "hbao_viewnormal.comp.glsl") && state;
-  state = compileShader(m_glslCompiler, m_shaders.blur, VK_SHADER_STAGE_COMPUTE_BIT, "hbao_blur.comp.glsl") && state;
-  state = compileShader(m_glslCompiler, m_shaders.blur_apply, VK_SHADER_STAGE_COMPUTE_BIT, "hbao_blur_apply.comp.glsl") && state;
-  state = compileShader(m_glslCompiler, m_shaders.calc, VK_SHADER_STAGE_COMPUTE_BIT, "hbao_calc.comp.glsl") && state;
-  state = compileShader(m_glslCompiler, m_shaders.deinterleave, VK_SHADER_STAGE_COMPUTE_BIT, "hbao_deinterleave.comp.glsl") && state;
-  state = compileShader(m_glslCompiler, m_shaders.reinterleave, VK_SHADER_STAGE_COMPUTE_BIT, "hbao_reinterleave.comp.glsl") && state;
+  
+  // Try to compile all HBAO shaders with asset resolution
+  auto depth_linearize_path = lodclusters::resolve_asset(assetRoot, "hbao_depthlinearize.comp.glsl");
+  auto viewnormal_path = lodclusters::resolve_asset(assetRoot, "hbao_viewnormal.comp.glsl");
+  auto blur_path = lodclusters::resolve_asset(assetRoot, "hbao_blur.comp.glsl");
+  auto blur_apply_path = lodclusters::resolve_asset(assetRoot, "hbao_blur_apply.comp.glsl");
+  auto calc_path = lodclusters::resolve_asset(assetRoot, "hbao_calc.comp.glsl");
+  auto deinterleave_path = lodclusters::resolve_asset(assetRoot, "hbao_deinterleave.comp.glsl");
+  auto reinterleave_path = lodclusters::resolve_asset(assetRoot, "hbao_reinterleave.comp.glsl");
+
+  state = compileShader(m_glslCompiler, m_shaders.depth_linearize, VK_SHADER_STAGE_COMPUTE_BIT, depth_linearize_path) && state;
+  state = compileShader(m_glslCompiler, m_shaders.viewnormal, VK_SHADER_STAGE_COMPUTE_BIT, viewnormal_path) && state;
+  state = compileShader(m_glslCompiler, m_shaders.blur, VK_SHADER_STAGE_COMPUTE_BIT, blur_path) && state;
+  state = compileShader(m_glslCompiler, m_shaders.blur_apply, VK_SHADER_STAGE_COMPUTE_BIT, blur_apply_path) && state;
+  state = compileShader(m_glslCompiler, m_shaders.calc, VK_SHADER_STAGE_COMPUTE_BIT, calc_path) && state;
+  state = compileShader(m_glslCompiler, m_shaders.deinterleave, VK_SHADER_STAGE_COMPUTE_BIT, deinterleave_path) && state;
+  state = compileShader(m_glslCompiler, m_shaders.reinterleave, VK_SHADER_STAGE_COMPUTE_BIT, reinterleave_path) && state;
+  
+  if(!state) {
+    nvutils::Logger::getInstance().log(nvutils::Logger::LogLevel::eWARNING, 
+                                       "HBAO shader compilation failed, disabling HBAO (assetRoot=%s)", 
+                                       assetRoot.string().c_str());
+    return false; // Gracefully disabled due to missing shaders
+  }
 
   if(state)
   {

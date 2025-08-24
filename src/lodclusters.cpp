@@ -86,6 +86,12 @@ namespace lodclusters {
 LodClusters::LodClusters(const Info& info)
     : m_info(info)
 {
+  // Initialize asset root directory
+  if(info.assetRoot) {
+    m_assetRoot = info.assetRoot;
+  } else {
+    m_assetRoot.clear(); // Use default if needed
+  }
   nvutils::ProfilerTimeline::CreateInfo createInfo;
   createInfo.name = "graphics";
 
