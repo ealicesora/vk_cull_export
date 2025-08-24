@@ -18,71 +18,52 @@
 */
 
 #pragma once
-
 #include <filesystem>
 #include <string>
-#include <cstdlib>
-#include <nvvkglsl/glsl.hpp>
+#include <string_view>
+#include <vector>
+#include <nvutils/logger.hpp>
 
-namespace lodclusters {
+namespace assets {
 
-// 通用资源解析：给定相对文件，自动在若干常见子目录查找
-inline std::filesystem::path resolve_asset(const std::filesystem::path& root,
-                                           const std::string& rel) {
-  using std::filesystem::path;
-  const path r = root;
-  const path relp = rel;
-  const path cands[] = {
-    r / relp,
-    r / "shaders" / relp
+// 构造常用搜索路径（用于模型/贴图等）
+// 顺序很重要：先 asset_root，后各子目录
+std::vector<std::filesystem::path> build_search_paths(const std::filesystem::path& asset_root);
+
+// 通用解析：给定相对名，返回第一个存在的绝对路径；找不到则返回空 path
+std::filesystem::path resolve_in(const std::filesystem::path& asset_root,
+                                 const std::string& rel,
+                                 const std::vector<std::string>& subdirs);
+
+// Shader解析：始终返回绝对路径
+inline std::filesystem::path resolve_shader(const std::filesystem::path& root,
+                                            std::string_view rel) {
+  namespace fs = std::filesystem;
+  const fs::path r{rel};
+
+  const fs::path candidates[] = {
+    r,                      // as-is (绝不优先，但保留兼容)
+    root / r,
+    root / "shaders" / r,
+    root / "resources" / r
   };
-  for (auto& c : cands) if (std::filesystem::exists(c)) return c;
-  return r / relp; // 兜底
-}
 
-// 公共的"给编译器加 include 目录"的工具
-inline void add_glsl_includes(nvvkglsl::GlslCompiler& comp,
-                              const std::filesystem::path& assetRoot,
-                              const std::filesystem::path& filePath){
-  // Add search paths: asset root, shaders subdirectory, and file's parent directory
-  std::vector<std::filesystem::path> searchPaths = {
-    assetRoot,
-    assetRoot / "shaders",
-    filePath.parent_path()
-  };
-  comp.addSearchPaths(searchPaths);
-}
-
-// 获取默认资产根目录
-inline std::filesystem::path get_default_asset_root() {
-  // 优先环境变量
-  const char* env = std::getenv("VK2TORCH_DATA_ROOT");
-  if(env && *env) return std::filesystem::path(env);
-  
-  // 使用当前工作目录的父目录，这通常对应项目根
-  auto current = std::filesystem::current_path();
-  std::filesystem::path candidates[] = {
-    // Check current directory first
-    current,
-    // Check if we're in a python extension environment
-    current / "build-py" / "_bin" / "Release",
-    // Standard locations
-    current / "resources", 
-    current / ".." / "resources",
-    current / "../.." / "resources",
-    // Build directory locations
-    current / "shaders",
-    current / ".." / "shaders", 
-    current / "../.." / "shaders"
-  };
-  
-  for (auto& c : candidates) {
-    if (std::filesystem::exists(c / "shaders")) {
-      return c;
+  for (const auto& c : candidates) {
+    auto abs = fs::absolute(c.lexically_normal());
+    if (fs::exists(abs)) {
+      LOGI("[assets] resolved '%s' -> %s\n", std::string(rel).c_str(), abs.string().c_str());
+      return abs; // **返回绝对路径**
     }
   }
-  
-  return current;
+
+  // 兜底：也返回一个绝对路径，便于日志清晰
+  auto guess = fs::absolute((root / "shaders" / r).lexically_normal());
+  LOGW("[assets] resolve miss '%s', guessed %s\n", std::string(rel).c_str(), guess.string().c_str());
+  return guess;
 }
 
-} // namespace lodclusters
+inline std::filesystem::path resolve_model(const std::filesystem::path& root, const std::string& name) {
+  return resolve_in(root, name, {"", "resources", "assets", "assets/models", "models", "scenes", "meshes"});
+}
+
+} // namespace assets

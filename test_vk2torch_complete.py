@@ -88,8 +88,8 @@ def test_vulkan_initialization(vk2torch_ext):
     """Test Vulkan initialization (expected to fail in headless environments)"""
     print_section("🎮 Vulkan Initialization Test")
     try:
-        print("Creating Vk2TorchApp(512, 512, False, '')...")
-        app = vk2torch_ext.Vk2TorchApp(512, 512, False, "")
+        print("Creating Vk2TorchApp")
+        app = vk2torch_ext.Vk2TorchApp(512, 512, False,"/home/gongyuning/Desktop/vk_cull/vk_lod_clusters/_downloaded_resources/house.glb", "/home/gongyuning/Desktop/vk_cull/vk_lod_clusters/")
         print("🎉 SUCCESS: Vk2TorchApp created successfully!")
         
         # If we get here, the full functionality works

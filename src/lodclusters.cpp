@@ -22,6 +22,7 @@
 #include <nvgui/camera.hpp>
 
 #include "lodclusters.hpp"
+#include "asset_resolver.hpp"
 #if USE_DLSS
 #include "../shaders/dlss_util.h"
 #endif
@@ -473,10 +474,24 @@ void LodClusters::onAttach(nvapp::Application* app)
         std::filesystem::absolute(exeDirectoryPath / "resources"),
     };
 
-    // m_sceneFilePath = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
-    m_sceneFilePath = nvutils::findFile("house_new.glb", defaultSearchPaths);
-    // enforce unique geometries in the sample scene
-    m_sceneGridConfig.uniqueGeometriesForCopies = true;
+    // 使用统一的资产解析器加载默认场景
+    auto model = assets::resolve_model(m_assetRoot, "house_new.glb");
+    if (model.empty()) {
+      // 尝试bunny作为fallback
+      model = assets::resolve_model(m_assetRoot, "bunny_v2/bunny.gltf");
+      if (model.empty()) {
+        LOGW("Default scenes 'house_new.glb' and 'bunny_v2/bunny.gltf' not found under assetRoot=%s; skipping scene load.\n",
+             m_assetRoot.string().c_str());
+      } else {
+        m_sceneFilePath = model;
+        // enforce unique geometries in the sample scene
+        m_sceneGridConfig.uniqueGeometriesForCopies = true;
+      }
+    } else {
+      m_sceneFilePath = model;
+      // enforce unique geometries in the sample scene
+      m_sceneGridConfig.uniqueGeometriesForCopies = true;
+    }
 
     // Comment out the automatic grid setup to respect user's --gridcopies parameter
     /*

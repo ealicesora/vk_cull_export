@@ -98,6 +98,7 @@ add_library(vklod_core_obj OBJECT
   src/cgltf.cpp
   src/nvhiz_vk.cpp
   src/hbao_pass.cpp
+  src/asset_resolver.cpp
   thirdparty/vulkan_radix_sort/src/vk_radix_sort.cc
 )
 
@@ -107,6 +108,7 @@ set_property(TARGET vklod_core_obj PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_include_directories(vklod_core_obj PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/shaders  # 让 #include "hbao.h" 生效
   ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty
   ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/vulkan_radix_sort/include
   ${CMAKE_CURRENT_SOURCE_DIR}/external/nv_cluster_lod_builder/include
@@ -302,6 +304,7 @@ if(BUILD_PYTHON_EXT)
       target_include_directories(vk2torch_ext PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders  # 让 #include "hbao.h" 生效
         ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty
         ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/vulkan_radix_sort/include
         ${Vulkan_INCLUDE_DIR}

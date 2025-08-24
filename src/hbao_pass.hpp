@@ -50,7 +50,7 @@ public:
   };
 
   bool init(nvvk::ResourceAllocator* allocator, nvvk::SamplerPool* samplerPool, nvvkglsl::GlslCompiler* glslCompiler, const Config& config);
-  void setAssetRoot(const std::filesystem::path& assetRoot) { m_assetRoot = assetRoot; }
+  void setAssetRoot(const std::filesystem::path& assetRoot);
   bool reloadShaders();
   void deinit();
 

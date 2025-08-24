@@ -83,11 +83,8 @@ bool HbaoPass::init(nvvk::ResourceAllocator* allocator, nvvk::SamplerPool* sampl
     nvvk::createPipelineLayout(m_device, &m_pipelineLayout, {m_dsetPack.layout}, {{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16}});
   }
 
-  // pipelines
-  if(!reloadShaders())
-  {
-    return false;
-  }
+  // Note: Shaders will be loaded later when setAssetRoot() is called
+  // This ensures the GlslCompiler has proper search paths configured
 
   // ubo
   m_uboInfo.offset = 0;
@@ -115,6 +112,13 @@ bool HbaoPass::init(nvvk::ResourceAllocator* allocator, nvvk::SamplerPool* sampl
   }
 
   return true;
+}
+
+void HbaoPass::setAssetRoot(const std::filesystem::path& assetRoot)
+{
+  m_assetRoot = assetRoot;
+  // Reload shaders now that asset root and search paths are properly configured
+  reloadShaders();
 }
 
 static bool compileShader(nvvkglsl::GlslCompiler*        compiler,
@@ -158,43 +162,36 @@ bool HbaoPass::reloadShaders()
     return false; // Gracefully disabled
   }
 
-  // Get asset root (use set root or default)
-  auto assetRoot = m_assetRoot.empty() ? lodclusters::get_default_asset_root() : m_assetRoot;
   bool state = true;
+
+  // 使用 GlslCompiler 的默认选项（包含正确的 includer）
+  shaderc::CompileOptions opts = m_glslCompiler->options();
   
-  // Try to compile all HBAO shaders with asset resolution
-  auto depth_linearize_path = lodclusters::resolve_asset(assetRoot, "hbao_depthlinearize.comp.glsl");
-  auto viewnormal_path = lodclusters::resolve_asset(assetRoot, "hbao_viewnormal.comp.glsl");
-  auto blur_path = lodclusters::resolve_asset(assetRoot, "hbao_blur.comp.glsl");
-  auto blur_apply_path = lodclusters::resolve_asset(assetRoot, "hbao_blur_apply.comp.glsl");
-  auto calc_path = lodclusters::resolve_asset(assetRoot, "hbao_calc.comp.glsl");
-  auto deinterleave_path = lodclusters::resolve_asset(assetRoot, "hbao_deinterleave.comp.glsl");
-  auto reinterleave_path = lodclusters::resolve_asset(assetRoot, "hbao_reinterleave.comp.glsl");
+  // 使用统一的资产解析器
+  std::vector<std::pair<std::string, shaderc::SpvCompilationResult*>> shaders = {
+    {"hbao_depthlinearize.comp.glsl", &m_shaders.depth_linearize},
+    {"hbao_viewnormal.comp.glsl", &m_shaders.viewnormal},
+    {"hbao_blur.comp.glsl", &m_shaders.blur},
+    {"hbao_blur_apply.comp.glsl", &m_shaders.blur_apply},
+    {"hbao_calc.comp.glsl", &m_shaders.calc},
+    {"hbao_deinterleave.comp.glsl", &m_shaders.deinterleave},
+    {"hbao_reinterleave.comp.glsl", &m_shaders.reinterleave}
+  };
 
-  // Add include directories before compilation
-  lodclusters::add_glsl_includes(*m_glslCompiler, assetRoot, depth_linearize_path);
-
-  state = compileShader(m_glslCompiler, m_shaders.depth_linearize, VK_SHADER_STAGE_COMPUTE_BIT, depth_linearize_path) && state;
-  state = compileShader(m_glslCompiler, m_shaders.viewnormal, VK_SHADER_STAGE_COMPUTE_BIT, viewnormal_path) && state;
-  state = compileShader(m_glslCompiler, m_shaders.blur, VK_SHADER_STAGE_COMPUTE_BIT, blur_path) && state;
-  state = compileShader(m_glslCompiler, m_shaders.blur_apply, VK_SHADER_STAGE_COMPUTE_BIT, blur_apply_path) && state;
-  state = compileShader(m_glslCompiler, m_shaders.calc, VK_SHADER_STAGE_COMPUTE_BIT, calc_path) && state;
-  state = compileShader(m_glslCompiler, m_shaders.deinterleave, VK_SHADER_STAGE_COMPUTE_BIT, deinterleave_path) && state;
-  state = compileShader(m_glslCompiler, m_shaders.reinterleave, VK_SHADER_STAGE_COMPUTE_BIT, reinterleave_path) && state;
+  for(auto& [name, result] : shaders) {
+    const auto path = assets::resolve_shader(m_assetRoot, name); // 现在会返回"绝对路径"
+    state = compileShader(m_glslCompiler, *result, VK_SHADER_STAGE_COMPUTE_BIT, path, &opts) && state;
+  }
   
   if(!state) {
     nvutils::Logger::getInstance().log(nvutils::Logger::LogLevel::eWARNING, 
                                        "HBAO shader compilation failed, disabling HBAO (assetRoot=%s)", 
-                                       assetRoot.string().c_str());
+                                       m_assetRoot.string().c_str());
     return false; // Gracefully disabled due to missing shaders
   }
 
-  if(state)
-  {
-    updatePipelines();
-  }
-
-  return state;
+  updatePipelines();
+  return true;
 }
 
 

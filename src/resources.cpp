@@ -209,18 +209,19 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
     m_hiz.init(m_device, config, 1);
 
     shaderc::SpvCompilationResult shaderResults[NVHizVK::SHADER_COUNT];
+    
+    // 使用统一的资产解析器 - 现在返回绝对路径
+    auto nvhiz_path = assets::resolve_shader(m_assetRoot, "nvhiz-update.comp.glsl");
+    
     for(uint32_t i = 0; i < NVHizVK::SHADER_COUNT; i++)
     {
-      // Get asset root and resolve shader path
-      auto assetRoot = m_assetRoot.empty() ? lodclusters::get_default_asset_root() : m_assetRoot;
-      auto nvhiz_path = lodclusters::resolve_asset(assetRoot, "nvhiz-update.comp.glsl");
-      
-      // Add include directories before compilation
       shaderc::CompileOptions options = makeCompilerOptions();
-      lodclusters::add_glsl_includes(m_glslCompiler, assetRoot, nvhiz_path);
+      
       m_hiz.appendShaderDefines(i, options);
       
-      compileShader(shaderResults[i], VK_SHADER_STAGE_COMPUTE_BIT, nvhiz_path, &options);
+      if (!compileShader(shaderResults[i], VK_SHADER_STAGE_COMPUTE_BIT, nvhiz_path, &options)) {
+        LOGW("Failed to compile NVHIZ shader variant %d\n", i);
+      }
     }
     m_hiz.initPipelines(shaderResults);
   }
@@ -244,6 +245,16 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
 void Resources::setAssetRoot(const std::filesystem::path& assetRoot)
 {
   m_assetRoot = assetRoot;
+  
+  // Add asset root shader paths to GlslCompiler search paths for include resolution FIRST
+  std::vector<std::filesystem::path> shaderPaths = {
+    assetRoot,
+    assetRoot / "shaders",
+    assetRoot / "resources"
+  };
+  m_glslCompiler.addSearchPaths(shaderPaths);
+  
+  // Now reload shaders with proper search paths configured
   m_hbaoPass.setAssetRoot(assetRoot);
 }
 
