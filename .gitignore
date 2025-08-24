@@ -57,6 +57,7 @@ python*.log
 *.swp
 *.swo
 *~
+*.npy
 
 _deps/
 

@@ -39,8 +39,8 @@ try:
     # Add build directory to path for vk2torch_ext
     build_paths = [
         "build-py/_bin/Release",
-        "_bin/Release", 
-        "python/_bin/Release"
+        # "_bin/Release", 
+        # "python/_bin/Release"
     ]
     for path in build_paths:
         if os.path.exists(path):
@@ -152,23 +152,27 @@ def main():
         
         # 3) Import all CUDA resources from file descriptors
         print("🔗 Importing CUDA external resources...")
-        
+
+        time.sleep(1.0)
+
         # Import external memory and get device pointer
+
         buffer_size = int(info['height']) * int(info['row_pitch_bytes'])
         ext_mem, dev_ptr = import_ext_memory_fd(int(info['depth_mem_fd']), buffer_size)
         print(f"✅ Depth memory imported: {buffer_size} bytes")
         
         # Import timeline semaphores  
+        
         sem_scene = import_timeline_semaphore_fd(int(info['scene_ready_sem_fd']))
         sem_camera = import_timeline_semaphore_fd(int(info['camera_ready_sem_fd']))
         sem_frame = import_timeline_semaphore_fd(int(info['frame_done_sem_fd']))
         print("✅ Timeline semaphores imported")
         
-        # Close FDs (CUDA has imported them)
-        for fd_key in ['depth_mem_fd', 'scene_ready_sem_fd', 'camera_ready_sem_fd', 'frame_done_sem_fd']:
-            fd_val = int(info[fd_key])
-            if fd_val >= 0:
-                os.close(fd_val)
+        # NO need to Close FDs !!!!
+        # for fd_key in ['depth_mem_fd', 'scene_ready_sem_fd', 'camera_ready_sem_fd', 'frame_done_sem_fd']:
+        #     fd_val = int(info[fd_key])
+        #     if fd_val >= 0:
+        #         os.close(fd_val)
         
         width = int(info['width'])
         height = int(info['height']) 

@@ -21,7 +21,7 @@ from typing import Optional, Tuple, Any
 # CUDA constants and error codes
 CUDA_SUCCESS = 0
 CUDA_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD = 1
-CUDA_EXTERNAL_SEMAPHORE_HANDLE_TYPE_TIMELINE_SEMAPHORE_FD = 3
+CUDA_EXTERNAL_SEMAPHORE_HANDLE_TYPE_TIMELINE_SEMAPHORE_FD = 9
 
 class CudaError(Exception):
     """CUDA operation failed"""
@@ -79,19 +79,36 @@ def get_cuda_context() -> CudaContext:
         _cuda_context = CudaContext()
     return _cuda_context
 
-# CUDA structure definitions (CUDA v1 compliant)
-class CUDA_EXTERNAL_MEMORY_HANDLE_DESC(ctypes.Structure):
-    """CUDA external memory handle descriptor"""
-    class Handle(ctypes.Union):
-        _fields_ = [("fd", ctypes.c_int)]
-    
+
+
+
+CUdeviceptr = ctypes.c_uint64
+
+class _Win32Pair(ctypes.Structure):
     _fields_ = [
-        ("type", ctypes.c_uint),
-        ("handle", Handle),
-        ("size", ctypes.c_ulonglong),
-        ("flags", ctypes.c_uint),
-        ("reserved", ctypes.c_uint * 16)
+        ("handle", ctypes.c_void_p),
+        ("name",   ctypes.c_void_p),
     ]
+
+class _HandleUnion(ctypes.Union):
+    _fields_ = [
+        ("fd", ctypes.c_int),
+        ("win32", _Win32Pair),
+        ("nvSciBufObject", ctypes.c_void_p),
+    ]
+
+class CUDA_EXTERNAL_MEMORY_HANDLE_DESC(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_uint),                 # CUexternalMemoryHandleType
+        ("handle", _HandleUnion),
+        ("size", ctypes.c_uint64),               # allocation size (NOT buffer size)
+        ("flags", ctypes.c_uint),                # 0 or CUDA_EXTERNAL_MEMORY_DEDICATED
+        ("reserved", ctypes.c_uint * 16) ,
+    ]
+
+
+
+
 
 class CUDA_EXTERNAL_MEMORY_BUFFER_DESC(ctypes.Structure):
     """CUDA external memory buffer descriptor"""
@@ -103,41 +120,67 @@ class CUDA_EXTERNAL_MEMORY_BUFFER_DESC(ctypes.Structure):
     ]
 
 class CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC(ctypes.Structure):
-    """CUDA external semaphore handle descriptor"""
     class Handle(ctypes.Union):
-        _fields_ = [("fd", ctypes.c_int)]
+        _fields_ = [
+            ("fd", ctypes.c_int),
+            ("win32", ctypes.c_void_p),  # Not used on Linux
+            ("nvSciSyncObj", ctypes.c_void_p),  # Not used
+        ]
     
     _fields_ = [
         ("type", ctypes.c_uint),
         ("handle", Handle),
         ("flags", ctypes.c_uint),
-        ("reserved", ctypes.c_uint * 16)
+        ("reserved", ctypes.c_uint * 16),
     ]
+        
+
+
+class _WaitFence(ctypes.Structure):
+    _fields_ = [
+        ("value", ctypes.c_uint64),
+        ("reserved", ctypes.c_uint * 16),   # ★ 必须有
+    ]
+
+class _WaitKeyedMutex(ctypes.Structure):
+    _fields_ = [
+        ("key", ctypes.c_uint),
+        ("timeoutMs", ctypes.c_uint),
+        ("reserved", ctypes.c_uint * 14),
+    ]
+
+class _WaitParamsUnion(ctypes.Union):
+    _fields_ = [("fence", _WaitFence), ("keyedMutex", _WaitKeyedMutex)]
 
 class CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS(ctypes.Structure):
-    """CUDA external semaphore wait parameters"""
-    class Params(ctypes.Union):
-        class Fence(ctypes.Structure):
-            _fields_ = [("value", ctypes.c_ulonglong)]
-        _fields_ = [("fence", Fence)]
-    
     _fields_ = [
-        ("params", Params),
+        ("params", _WaitParamsUnion),
         ("flags", ctypes.c_uint),
-        ("reserved", ctypes.c_uint * 16)
+        ("reserved", ctypes.c_uint * 16),
     ]
 
-class CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS(ctypes.Structure):
-    """CUDA external semaphore signal parameters"""
-    class Params(ctypes.Union):
-        class Fence(ctypes.Structure):
-            _fields_ = [("value", ctypes.c_ulonglong)]
-        _fields_ = [("fence", Fence)]
-    
+
+class _SigFence(ctypes.Structure):
     _fields_ = [
-        ("params", Params),
+        ("value", ctypes.c_uint64),
+        ("reserved", ctypes.c_uint * 16),   # ★ 必须有
+    ]
+
+class _SigKeyedMutex(ctypes.Structure):
+    _fields_ = [
+        ("key", ctypes.c_uint),
+        ("timeoutMs", ctypes.c_uint),
+        ("reserved", ctypes.c_uint * 14),   # 保持整体大小一致
+    ]
+
+class _SigParamsUnion(ctypes.Union):
+    _fields_ = [("fence", _SigFence), ("keyedMutex", _SigKeyedMutex)]
+
+class CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS(ctypes.Structure):
+    _fields_ = [
+        ("params", _SigParamsUnion),
         ("flags", ctypes.c_uint),
-        ("reserved", ctypes.c_uint * 16)
+        ("reserved", ctypes.c_uint * 16),
     ]
 
 def import_ext_memory_fd(fd: int, size: int, is_dedicated: bool = False) -> Tuple[ctypes.c_void_p, ctypes.c_void_p]:
@@ -159,6 +202,7 @@ def import_ext_memory_fd(fd: int, size: int, is_dedicated: bool = False) -> Tupl
     
     # Set up external memory descriptor
     desc = CUDA_EXTERNAL_MEMORY_HANDLE_DESC()
+    ctypes.memset(ctypes.byref(desc), 0, ctypes.sizeof(desc))
     desc.type = CUDA_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD
     desc.handle.fd = fd
     desc.size = size
@@ -200,9 +244,10 @@ def import_timeline_semaphore_fd(fd: int) -> ctypes.c_void_p:
     
     # Set up external semaphore descriptor
     desc = CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC()
+    ctypes.memset(ctypes.byref(desc), 0, ctypes.sizeof(desc))
     desc.type = CUDA_EXTERNAL_SEMAPHORE_HANDLE_TYPE_TIMELINE_SEMAPHORE_FD
     desc.handle.fd = fd
-    desc.flags = 0
+    desc.flags = 0x00
     
     # Import external semaphore
     ext_sem = ctypes.c_void_p()
@@ -275,7 +320,8 @@ def wait_timeline(ext_sem: ctypes.c_void_p, value: int, stream_ptr: int) -> None
     
     # Set up wait parameters
     wait_params = CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS()
-    wait_params.params.fence.value = value
+    ctypes.memset(ctypes.byref(wait_params), 0, ctypes.sizeof(wait_params))
+    wait_params.params.fence.value = ctypes.c_uint64(value)
     wait_params.flags = 0
     
     # Wait on semaphore
@@ -287,7 +333,7 @@ def wait_timeline(ext_sem: ctypes.c_void_p, value: int, stream_ptr: int) -> None
     
     result = ctx.libcuda.cuWaitExternalSemaphoresAsync(
         ctypes.byref(ext_sem), ctypes.byref(wait_params), 1,
-        ctypes.c_void_p(stream_ptr)
+        ctypes.c_void_p(stream_ptr)# ctypes.c_void_p(stream_ptr)
     )
     
     if result != CUDA_SUCCESS:
@@ -309,9 +355,13 @@ def signal_timeline(ext_sem: ctypes.c_void_p, value: int, stream_ptr: int) -> No
     
     # Set up signal parameters
     signal_params = CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS()
+    ctypes.memset(ctypes.byref(signal_params), 0, ctypes.sizeof(signal_params))
     signal_params.params.fence.value = value
     signal_params.flags = 0
     
+    #   self.cuda.cuSignalExternalSemaphoresAsync.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS), ctypes.c_uint, ctypes.c_void_p]
+    #     self.cuda.cuSignalExternalSemaphoresAsync.restype = ctypes.c_int
+
     # Signal semaphore
     ctx.libcuda.cuSignalExternalSemaphoresAsync.argtypes = [
         ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS),
@@ -350,11 +400,14 @@ def make_pitched_cupy_array(device_ptr: int, row_pitch_bytes: int, width: int, h
     except ImportError:
         raise ImportError("CuPy is required for pitched array creation")
     
-    if row_pitch_bytes < width * dtype.itemsize:
-        raise ValueError(f"Row pitch {row_pitch_bytes} too small for width {width} * itemsize {dtype.itemsize}")
+    # if row_pitch_bytes < width * dtype.itemsize:
+    #     raise ValueError(f"Row pitch {row_pitch_bytes} too small for width {width} * itemsize {dtype.itemsize}")
     
+    dt = np.dtype(dtype)
+    itemsize = int(dt.itemsize)
+
     # Calculate strides: row stride in bytes, column stride is itemsize
-    strides = (row_pitch_bytes, dtype.itemsize)
+    strides = (row_pitch_bytes, itemsize)
     
     # Create memory pointer from integer device pointer
     memptr = cp.cuda.MemoryPointer(
@@ -368,8 +421,24 @@ def make_pitched_cupy_array(device_ptr: int, row_pitch_bytes: int, width: int, h
         memptr=memptr,
         strides=strides
     )
+
+    umem = cp.cuda.UnownedMemory(
+        device_ptr,
+        height * row_pitch_bytes,  # Total size 
+        owner=None
+    )
+    mptr = cp.cuda.MemoryPointer(umem, 0)
     
-    return array
+    # Create raw uint32 array with proper strides for row pitch
+    raw32 = cp.ndarray(
+        (height, width), 
+        dtype=cp.uint32, 
+        memptr=mptr,
+        strides=strides  # (row_pitch_bytes, bytes_per_pixel)
+    )
+
+
+    return raw32
 
 def depth_d24_to_float(d24_array: Any) -> Any:
     """
