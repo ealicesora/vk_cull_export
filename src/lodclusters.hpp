@@ -136,6 +136,11 @@ public:
   bool getShowDebugUI() const { return m_showDebugUI; }
   const std::filesystem::path& getAssetRoot() const { return m_assetRoot; }
 
+  // Camera override support for pybind11 integration
+  void enableOverrideCamera(const glm::mat4& proj, const glm::mat4& view);
+  void disableOverrideCamera();
+  void renderOneFrame(uint64_t frameValue);
+
 private:
   VkExtent2D                 m_windowSize;
   Info                       m_info;
@@ -196,6 +201,11 @@ private:
   int32_t               m_streamHistogramOffset = 0;
 
   uint32_t m_equalFrames = 0;
+
+  // Camera override state for pybind11 integration
+  bool       m_useOverrideCamera{false};
+  glm::mat4  m_overrideProj{1.0f};
+  glm::mat4  m_overrideView{1.0f};
 
   bool initScene(const std::filesystem::path& filePath, bool configChange);
   void setSceneCamera(const std::filesystem::path& filePath);

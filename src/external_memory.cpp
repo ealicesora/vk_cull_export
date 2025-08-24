@@ -1561,6 +1561,32 @@ VkExtent2D ExternalMemoryManager::extent() const {
   return {m_config.width, m_config.height};
 }
 
+DepthExportInfo ExternalMemoryManager::getDepthExportInfo() const {
+  DepthExportInfo info{};
+  
+  if (!m_inProcessMode) {
+    LOGE("getDepthExportInfo: Not initialized in in-process mode\n");
+    return info;
+  }
+  
+  // Fill in basic info
+  info.width = m_config.width;
+  info.height = m_config.height;
+  info.row_pitch_bytes = m_actualRowPitch;
+  info.size = static_cast<uint64_t>(m_actualRowPitch) * m_config.height;
+  info.offset = 0;
+  info.format = m_config.exportDepthFormat;
+  
+  // Get file descriptors (don't duplicate here - caller will decide)
+  info.memory_fd = exportDepthBufferFdDup();
+  info.timeline_semaphore_fd = exportFrameDoneSemaphoreFdDup();
+  
+  // Get current timeline semaphore value
+  info.last_signaled_payload = getCurrentFrameNumber();
+  
+  return info;
+}
+
 VkSemaphore ExternalMemoryManager::timelineSemaphore() const {
   return m_frameDoneSemaphore;
 }

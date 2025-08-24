@@ -40,6 +40,18 @@
 
 namespace lodclusters {
 
+struct DepthExportInfo {
+  int memory_fd = -1;                    // VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT
+  int timeline_semaphore_fd = -1;        // VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT
+  uint32_t width = 0;
+  uint32_t height = 0; 
+  uint32_t row_pitch_bytes = 0;
+  uint64_t size = 0;
+  uint64_t offset = 0;
+  VkFormat format = VK_FORMAT_UNDEFINED;
+  uint64_t last_signaled_payload = 0;
+};
+
 struct ExternalMemoryConfig {
   bool enabled = false;
   std::string udsPath = "/tmp/vk2torch.sock";
@@ -67,6 +79,9 @@ public:
   uint32_t rowPitchBytes() const;              // Real row pitch for CuPy strides
   VkExtent2D extent() const;                   // Image extent
   VkSemaphore timelineSemaphore() const;       // Timeline semaphore handle
+  
+  // Export info aggregation for pybind11 integration
+  DepthExportInfo getDepthExportInfo() const;
 
   // Create exportable resources
   bool createExportableBuffer(VkDeviceSize size, VkBufferUsageFlags usage, 

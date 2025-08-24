@@ -44,6 +44,7 @@
 #include <filesystem>
 #include <cstdlib>
 #include <dlfcn.h>
+#include <unistd.h>     // ::dup
 
 // Project includes
 #include "core/context_bootstrap.hpp"
@@ -216,6 +217,118 @@ public:
     }
 
     /**
+     * Export depth buffer information with file descriptors for CUDA interop
+     * @param dup_fds Whether to duplicate file descriptors (default: true)
+     * @return Dictionary with memory/semaphore FDs and buffer information
+     */
+    pybind11::dict get_depth_export_info(bool dup_fds = true) {
+        if (!m_externalMemory) {
+            throw std::runtime_error("ExternalMemoryManager not initialized");
+        }
+
+        // Get export info from ExternalMemoryManager
+        auto info = m_externalMemory->getDepthExportInfo();
+        
+        int mem_fd = info.memory_fd;
+        int sem_fd = info.timeline_semaphore_fd;
+        
+        if (dup_fds) {
+            if (mem_fd >= 0) mem_fd = ::dup(mem_fd);
+            if (sem_fd >= 0) sem_fd = ::dup(sem_fd);
+        }
+        
+        pybind11::dict d;
+        d["mem_fd"]            = mem_fd;
+        d["sem_fd"]            = sem_fd;
+        d["row_pitch_bytes"]   = info.row_pitch_bytes;
+        d["width"]             = info.width;
+        d["height"]            = info.height;
+        d["size"]              = pybind11::int_(info.size);
+        d["offset"]            = pybind11::int_(info.offset);
+        d["format_name"]       = "VK_FORMAT_D24_UNORM_S8_UINT"; // TODO: convert enum to string
+        d["handle_types"]      = "OPAQUE_FD";
+        d["semaphore_payload"] = pybind11::int_(info.last_signaled_payload);
+        return d;
+    }
+
+    /**
+     * Set camera view and projection matrices
+     * @param proj 4x4 projection matrix (row-major)
+     * @param view 4x4 view matrix (row-major)
+     */
+    void set_camera_matrices(pybind11::array proj_arr, pybind11::array view_arr) {
+        // Validate input arrays
+        if (proj_arr.ndim() != 2 || proj_arr.shape(0) != 4 || proj_arr.shape(1) != 4) {
+            throw std::runtime_error("proj must be 4x4 matrix");
+        }
+        if (view_arr.ndim() != 2 || view_arr.shape(0) != 4 || view_arr.shape(1) != 4) {
+            throw std::runtime_error("view must be 4x4 matrix");
+        }
+
+        // Convert to float arrays (handle both float32 and float64)
+        std::array<float, 16> proj_data{}, view_data{};
+        
+        pybind11::buffer_info proj_buf = proj_arr.request();
+        pybind11::buffer_info view_buf = view_arr.request();
+        
+        // Convert projection matrix
+        if (proj_buf.itemsize == 8) {
+            const double* src = static_cast<const double*>(proj_buf.ptr);
+            for (int i = 0; i < 16; ++i) proj_data[i] = float(src[i]);
+        } else {
+            const float* src = static_cast<const float*>(proj_buf.ptr);
+            for (int i = 0; i < 16; ++i) proj_data[i] = src[i];
+        }
+        
+        // Convert view matrix
+        if (view_buf.itemsize == 8) {
+            const double* src = static_cast<const double*>(view_buf.ptr);
+            for (int i = 0; i < 16; ++i) view_data[i] = float(src[i]);
+        } else {
+            const float* src = static_cast<const float*>(view_buf.ptr);
+            for (int i = 0; i < 16; ++i) view_data[i] = src[i];
+        }
+        
+        // Convert row-major to column-major (GLM format)
+        glm::mat4 proj(1.0f), view(1.0f);
+        for (int r = 0; r < 4; ++r) {
+            for (int c = 0; c < 4; ++c) {
+                proj[c][r] = proj_data[r * 4 + c];  // row-major -> column-major
+                view[c][r] = view_data[r * 4 + c];
+            }
+        }
+        
+        // Apply camera override to LodClusters
+        if (m_lodclusters) {
+            m_lodclusters->enableOverrideCamera(proj, view);
+        } else {
+            throw std::runtime_error("LodClusters not initialized");
+        }
+    }
+
+    /**
+     * Trigger one frame render and signal completion
+     * @param sync Whether to wait for frame completion (default: false)
+     * @return Timeline semaphore value for this frame
+     */
+    uint64_t render_and_signal(bool sync = false) {
+        if (!m_lodclusters) {
+            throw std::runtime_error("LodClusters not initialized");
+        }
+        
+        uint64_t frame_value = m_frameCounter.fetch_add(1) + 1;
+        
+        // Trigger frame render with timeline signaling
+        m_lodclusters->renderOneFrame(frame_value);
+        
+        if (sync) {
+            waitFrameDone(frame_value);
+        }
+        
+        return frame_value;
+    }
+
+    /**
      * Stop the Application and cleanup resources
      */
     void stop() {
@@ -267,8 +380,20 @@ private:
     std::mutex m_stopMutex;
     std::condition_variable m_stopCondition;
     
+    // Frame synchronization for render_and_signal
+    std::atomic<uint64_t> m_frameCounter{0};
+    
     // Shared components for elements
     std::shared_ptr<nvutils::CameraManipulator> m_cameraManipulator;
+    
+    // Frame synchronization helper
+    void waitFrameDone(uint64_t value) {
+        if (m_app) {
+            // Simple synchronization - wait for all operations to complete
+            // TODO: Implement proper timeline semaphore waiting
+            vkDeviceWaitIdle(m_app->getDevice());
+        }
+    }
     
     // Real Vulkan initialization
     void initializeVulkan() {
@@ -573,6 +698,19 @@ PYBIND11_MODULE(vk2torch_ext, m) {
         .def("set_camera", &Vk2TorchApp::set_camera,
              "Set camera view and projection matrices with frame number",
              py::arg("frame"), py::arg("view"), py::arg("proj"))
+        
+        // New zero-copy rendering API methods
+        .def("get_depth_export_info", &Vk2TorchApp::get_depth_export_info,
+             "Export depth buffer information with file descriptors for CUDA interop",
+             py::arg("dup_fds") = true)
+        
+        .def("set_camera_matrices", &Vk2TorchApp::set_camera_matrices,
+             "Set camera view and projection matrices (numpy 4x4 arrays)",
+             py::arg("proj"), py::arg("view"))
+        
+        .def("render_and_signal", &Vk2TorchApp::render_and_signal,
+             "Trigger one frame render and signal completion",
+             py::arg("sync") = false)
         
         .def("last_signaled_frame", &Vk2TorchApp::last_signaled_frame,
              "Get last signaled frame number from timeline semaphore")

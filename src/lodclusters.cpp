@@ -898,13 +898,22 @@ void LodClusters::onRender(VkCommandBuffer cmd)
   #endif
     frameConstants.fov = glm::radians(m_info.cameraManipulator->getFov());
 
-    glm::mat4 projection =
-        glm::perspectiveRH_ZO(glm::radians(m_info.cameraManipulator->getFov()), float(renderWidth) / float(renderHeight),
-                              frameConstants.nearPlane, frameConstants.farPlane);
-    projection[1][1] *= -1;
+    glm::mat4 projection, view, viewI;
+    
+    // Camera override support for pybind11 integration
+    if (m_useOverrideCamera) {
+      projection = m_overrideProj;
+      view = m_overrideView;
+      viewI = glm::inverse(view);
+    } else {
+      projection =
+          glm::perspectiveRH_ZO(glm::radians(m_info.cameraManipulator->getFov()), float(renderWidth) / float(renderHeight),
+                                frameConstants.nearPlane, frameConstants.farPlane);
+      projection[1][1] *= -1;
 
-    glm::mat4 view  = m_info.cameraManipulator->getViewMatrix();
-    glm::mat4 viewI = glm::inverse(view);
+      view  = m_info.cameraManipulator->getViewMatrix();
+      viewI = glm::inverse(view);
+    }
 
     frameConstants.viewProjMatrix  = projection * view;
     frameConstants.viewProjMatrixI = glm::inverse(frameConstants.viewProjMatrix);
@@ -1285,6 +1294,119 @@ void LodClusters::setExternalMemoryManager(ExternalMemoryManager* manager)
   m_externalMemoryManager = manager;
   m_frameConfig.externalMemoryManager = manager;
   LOGI("External memory manager set for Python integration\n");
+}
+
+void LodClusters::enableOverrideCamera(const glm::mat4& proj, const glm::mat4& view)
+{
+  m_useOverrideCamera = true;
+  m_overrideProj = proj;
+  m_overrideView = view;
+}
+
+void LodClusters::disableOverrideCamera()
+{
+  m_useOverrideCamera = false;
+}
+
+void LodClusters::renderOneFrame(uint64_t frameValue)
+{
+  // Only proceed if we have a renderer and scene ready
+  if (!m_renderer || !m_renderScene) {
+    return;
+  }
+  
+  // Set frame value for external memory manager
+  if (m_externalMemoryManager) {
+    m_externalMemoryManager->setCurrentFrameValue(frameValue);
+  }
+  
+  // For pybind11 integration, we need to render independently of the main app loop
+  // This creates a standalone rendering pass using the current camera override
+  
+  // Update frame configuration
+  m_frameConfig.windowSize = m_windowSize;
+  m_frameConfig.hbaoActive = m_tweak.hbaoActive && m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD;
+  
+  // Set up frame constants similar to onPreRender
+  shaderio::FrameConstants& frameConstants = m_frameConfig.frameConstants;
+  
+  // Basic frame setup
+  frameConstants.frame = m_frames++;
+  frameConstants.bgColor = m_resources.m_bgColor;
+  frameConstants.facetShading = m_tweak.facetShading ? 1 : 0;
+  frameConstants.visualize = m_frameConfig.visualize;
+  frameConstants.flipWinding = m_rendererConfig.flipWinding ? 1 : 0;
+  if (m_rendererConfig.twoSided) {
+    frameConstants.flipWinding = 2;
+  }
+  
+  uint32_t renderWidth = m_resources.m_frameBuffer.renderSize.width;
+  uint32_t renderHeight = m_resources.m_frameBuffer.renderSize.height;
+  
+  frameConstants.viewport = glm::ivec2(renderWidth, renderHeight);
+  frameConstants.viewportf = glm::vec2(renderWidth, renderHeight);
+  frameConstants.supersample = m_tweak.supersample;
+  frameConstants.nearPlane = m_info.cameraManipulator->getClipPlanes().x;
+  frameConstants.farPlane = m_info.cameraManipulator->getClipPlanes().y;
+  frameConstants.wUpDir = m_info.cameraManipulator->getUp();
+  frameConstants.fov = glm::radians(m_info.cameraManipulator->getFov());
+  
+  // Use camera override if set, otherwise fall back to camera manipulator
+  glm::mat4 projection, view, viewI;
+  if (m_useOverrideCamera) {
+    projection = m_overrideProj;
+    view = m_overrideView;
+    viewI = glm::inverse(view);
+  } else {
+    projection = glm::perspectiveRH_ZO(frameConstants.fov, 
+                                      float(renderWidth) / float(renderHeight),
+                                      frameConstants.nearPlane, 
+                                      frameConstants.farPlane);
+    projection[1][1] *= -1;
+    view = m_info.cameraManipulator->getViewMatrix();
+    viewI = glm::inverse(view);
+  }
+  
+  // Set up camera matrices
+  frameConstants.viewProjMatrix = projection * view;
+  frameConstants.viewProjMatrixI = glm::inverse(frameConstants.viewProjMatrix);
+  frameConstants.viewMatrix = view;
+  frameConstants.viewMatrixI = viewI;
+  frameConstants.projMatrix = projection;
+  frameConstants.projMatrixI = glm::inverse(projection);
+  
+  // Additional derived values
+  frameConstants.viewPos = frameConstants.viewMatrixI[3];
+  frameConstants.viewDir = -viewI[2];
+  frameConstants.viewPlane = frameConstants.viewDir;
+  frameConstants.viewPlane.w = -glm::dot(glm::vec3(frameConstants.viewPos), glm::vec3(frameConstants.viewDir));
+  frameConstants.wLightPos = frameConstants.viewMatrixI[3];
+  
+  // Create and record command buffer for rendering
+  VkCommandBuffer cmd = m_resources.createTempCmdBuffer();
+  
+  // Begin frame and render
+  m_resources.beginFrame(0);  // Use frame index 0 for standalone rendering
+  
+  // Store current external frame number for signaling
+  m_currentExternalFrameNumber = frameValue;
+  
+  // Render the scene
+  m_renderer->render(cmd, m_resources, *m_renderScene, m_frameConfig, m_profilerGpuTimer);
+  
+  // End frame
+  m_resources.endFrame();
+  
+  // Submit the command buffer and handle timeline semaphore signaling
+  m_resources.tempSyncSubmit(cmd);
+  
+  // Signal frame done semaphore if external memory is active
+  if (m_externalMemoryManager && m_externalMemoryManager->isConnected() && m_app) {
+    // Use the same signaling mechanism as the main render loop
+    if (!m_externalMemoryManager->signalFrameDone(frameValue, m_app->getQueue(0).queue)) {
+      printf("renderOneFrame: Failed to signal frame done semaphore for frame %lu\n", frameValue);
+    }
+  }
 }
 
 }  // namespace lodclusters

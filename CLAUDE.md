@@ -707,3 +707,4 @@ The VK2Torch integration implements a minimal-socket design:
   - Socket used only as fallback if shared memory unavailable (sends binary "CAM1" format or JSON)
 - This achieves near-zero CPU overhead for inter-process communication
 - never make a "simplified version without LodClusters dependency"
+- If encounter the redefination issue when build, solve it by using DBUILD_APP=OFF

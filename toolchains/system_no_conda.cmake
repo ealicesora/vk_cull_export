@@ -20,6 +20,14 @@ if(DEFINED ENV{CONDA_PREFIX})
        )
 endif()
 
+# ---- Force system library search paths to override conda contamination
+set(CMAKE_SYSTEM_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu;/usr/lib;/lib/x86_64-linux-gnu;/lib" CACHE STRING "" FORCE)
+set(CMAKE_PLATFORM_IMPLICIT_LINK_DIRECTORIES "/usr/lib/x86_64-linux-gnu;/usr/lib;/lib/x86_64-linux-gnu;/lib")
+
+# ---- Completely override problematic conda linker flags
+set(CMAKE_EXE_LINKER_FLAGS_INIT "")
+set(CMAKE_SHARED_LINKER_FLAGS_INIT "")
+
 # ---- RPATH: prioritize system libraries and VulkanSDK at runtime
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
 set(CMAKE_BUILD_WITH_INSTALL_RPATH OFF)
