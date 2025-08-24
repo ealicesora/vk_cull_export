@@ -30,6 +30,22 @@
 #include <mutex>
 #include <atomic>
 #include <cstdio>
+#include <condition_variable>
+#include <chrono>
+
+// Vulkan and nvpro_core2 includes
+#include <vulkan/vulkan.h>
+#include <nvvk/context.hpp>
+#include <nvapp/application.hpp>
+#include <nvutils/logger.hpp>
+#include <nvutils/camera_manipulator.hpp>
+
+// Project includes
+#include "core/context_bootstrap.hpp"
+#include "pybridge/element_pybridge.hpp"
+#include "external_memory.hpp"
+#include "lodclusters.hpp"
+#include "scene.hpp"
 
 /**
  * Vk2TorchApp - Main interface class for in-process VK2Torch integration
@@ -54,9 +70,9 @@ public:
         try {
             initializeVulkan();
             createApplication();
-            startRenderThread();
+            startRenderThread();  // Scene will be loaded inside render thread
             
-            printf("Vk2TorchApp: Successfully initialized (stub mode)\n");
+            printf("Vk2TorchApp: Successfully initialized with real 3D rendering\n");
         }
         catch (const std::exception& e) {
             cleanup();
@@ -84,8 +100,10 @@ public:
      * @return Row pitch in bytes from ExternalMemoryManager
      */
     int row_pitch_bytes() const {
-        // Stub implementation - return default row pitch
-        return m_width * 4;  // Assume 4-byte RGBA
+        if (m_pybridge) {
+            return m_pybridge->rowPitchBytes();
+        }
+        return m_width * 4;  // Fallback
     }
 
     /**
@@ -93,9 +111,11 @@ public:
      * @return Duplicated file descriptor (caller must close)
      */
     int export_depth_buffer_fd() const {
-        // Stub implementation - return invalid FD
-        printf("Vk2TorchApp: export_depth_buffer_fd() - stub implementation\n");
-        return -1;  // Invalid FD for stub
+        if (m_pybridge) {
+            return m_pybridge->exportDepthBufferFdDup();
+        }
+        printf("Vk2TorchApp: export_depth_buffer_fd() - not ready\n");
+        return -1;  // Not ready
     }
 
     /**
@@ -103,9 +123,11 @@ public:
      * @return Duplicated file descriptor (caller must close)
      */
     int export_frame_done_semaphore_fd() const {
-        // Stub implementation - return invalid FD
-        printf("Vk2TorchApp: export_frame_done_semaphore_fd() - stub implementation\n");
-        return -1;  // Invalid FD for stub
+        if (m_pybridge) {
+            return m_pybridge->exportFrameDoneSemaphoreFdDup();
+        }
+        printf("Vk2TorchApp: export_frame_done_semaphore_fd() - not ready\n");
+        return -1;  // Not ready
     }
 
     /**
@@ -115,8 +137,11 @@ public:
      * @param proj 4x4 projection matrix in column-major order
      */
     void set_camera(uint64_t frame, const std::array<float, 16>& view, const std::array<float, 16>& proj) {
-        // Stub implementation - just log
-        printf("Vk2TorchApp: set_camera(frame=%lu) - stub implementation\n", frame);
+        if (m_pybridge) {
+            m_pybridge->updateCameraAndSignal(frame, view.data(), proj.data());
+        } else {
+            printf("Vk2TorchApp: set_camera(frame=%lu) - not ready\n", frame);
+        }
     }
 
     /**
@@ -124,7 +149,9 @@ public:
      * @return Timeline semaphore value for last completed frame
      */
     uint64_t last_signaled_frame() const {
-        // Stub implementation - return 0
+        if (m_pybridge) {
+            return m_pybridge->lastSignaledFrame();
+        }
         return 0;
     }
 
@@ -132,9 +159,22 @@ public:
      * Stop the Application and cleanup resources
      */
     void stop() {
-        printf("Vk2TorchApp: Stopping (stub implementation)...\n");
+        printf("Vk2TorchApp: Stopping...\n");
         
-        // Stub implementation - just cleanup
+        {
+            std::lock_guard<std::mutex> lock(m_stopMutex);
+            if (m_running) {
+                m_running = false;
+                if (m_app) {
+                    m_app->close();
+                }
+            }
+        }
+        
+        if (m_renderThread.joinable()) {
+            m_renderThread.join();
+        }
+        
         cleanup();
         printf("Vk2TorchApp: Stopped\n");
     }
@@ -146,65 +186,210 @@ private:
     bool m_raster;
     std::string m_scene_path;
     
-    // Stub implementation for compilation testing
-    void* m_externalMemory;
-    void* m_pybridge;
+    // Real application components
+    nvvk::Context m_vkContext;
+    std::unique_ptr<nvapp::Application> m_app;
+    std::unique_ptr<lodclusters::ExternalMemoryManager> m_externalMemory;
+    std::shared_ptr<lodclusters::ElementPyBridge> m_pybridge;
+    std::shared_ptr<lodclusters::LodClusters> m_lodclusters;
     
-    // Stub Vulkan context (using void* to avoid Vulkan header dependencies)
-    void* m_device;
-    void* m_physicalDevice;
+    // Threading and synchronization
+    std::thread m_renderThread;
+    std::atomic<bool> m_running{false};
+    std::atomic<bool> m_ready{false};
+    std::mutex m_stopMutex;
+    std::condition_variable m_stopCondition;
     
-    // Initialization methods (stub implementations)
+    // Shared components for elements
+    std::shared_ptr<nvutils::CameraManipulator> m_cameraManipulator;
+    
+    // Real Vulkan initialization
     void initializeVulkan() {
-        printf("Vk2TorchApp: Stub Vulkan initialization\n");
+        printf("Vk2TorchApp: Initializing Vulkan context...\n");
         
-        // Demonstrate unified external interop extensions logic (conceptual)
-        // In real implementation, this would call:
-        // core::appendExternalInteropExtensionsIfNeeded(vkSetup, needInterop);
+        // Create Vulkan context with external memory support
+        core::BootstrapConfig config;
+        config.needExternalInterop = true;  // Always need FD export for Python
+        config.forcedGpuIndex = -1;         // Auto-select GPU
+        config.enableValidation = false;    // Disable validation for performance
         
-        // Unified condition: pybind in-process always needs interop for FD export
-        bool needInterop = true;  // pybind mode always needs external memory/semaphore FD export
+        core::BootstrapResult result = core::createVulkanContext(config);
+        m_vkContext = std::move(result.ctx);
         
-        printf("Vk2TorchApp: External interop extensions would be configured (%s)\n", 
-               needInterop ? "enabled" : "disabled");
-        
-        printf("Vk2TorchApp: Would add external memory extensions:\n");
-        printf("  - VK_KHR_external_memory\n");
-        printf("  - VK_KHR_external_memory_fd\n");
-        printf("  - VK_KHR_external_semaphore\n");
-        printf("  - VK_KHR_external_semaphore_fd\n");
-        printf("  - VK_KHR_timeline_semaphore\n");
-        
-        // TODO: Implement actual Vulkan context creation with unified extension function
-        // For now, just set placeholder values
-        m_device = nullptr;
-        m_physicalDevice = nullptr;
+        printf("Vk2TorchApp: Vulkan context created successfully\n");
     }
     
     void createApplication() {
-        printf("Vk2TorchApp: Stub Application creation\n");
+        printf("Vk2TorchApp: Creating Application with real 3D scene rendering...\n");
         
-        // Create stub pointers (not initialized)
-        m_externalMemory = nullptr;
-        m_pybridge = nullptr;
+        // Create shared components
+        m_cameraManipulator = std::make_shared<nvutils::CameraManipulator>();
         
-        printf("Vk2TorchApp: Stub components created\n");
+        // Create external memory manager for in-process mode
+        m_externalMemory = std::make_unique<lodclusters::ExternalMemoryManager>();
+        lodclusters::ExternalMemoryConfig extConfig;
+        extConfig.enabled = true;
+        extConfig.width = m_width;
+        extConfig.height = m_height;
+        extConfig.format = VK_FORMAT_R32_UINT;  // Packed 24-bit depth in 32-bit
+        extConfig.exportDepthFormat = VK_FORMAT_R32_UINT;
+        extConfig.pack24In32 = true;
+        
+        if (!m_externalMemory->initInProcess(m_vkContext.getDevice(), m_vkContext.getPhysicalDevice(), extConfig)) {
+            throw std::runtime_error("Failed to initialize external memory manager");
+        }
+        
+        // Create nvapp::Application
+        nvapp::ApplicationCreateInfo appInfo;
+        appInfo.name = "VK2Torch In-Process - Real 3D Rendering";
+        appInfo.headless = true;
+        appInfo.headlessFrameCount = 1000000;  // Run indefinitely
+        appInfo.windowSize = {static_cast<uint32_t>(m_width), static_cast<uint32_t>(m_height)};
+        appInfo.vSync = false;
+        appInfo.useMenu = false;
+        appInfo.instance = m_vkContext.getInstance();
+        appInfo.device = m_vkContext.getDevice();
+        appInfo.physicalDevice = m_vkContext.getPhysicalDevice();
+        appInfo.queues = m_vkContext.getQueueInfos();
+        
+        m_app = std::make_unique<nvapp::Application>();
+        m_app->init(appInfo);
+        
+        // Create LodClusters element for real 3D scene rendering
+        printf("Vk2TorchApp: Creating LodClusters for real scene rendering...\n");
+        lodclusters::LodClusters::Info lodInfo;
+        lodInfo.cameraManipulator = m_cameraManipulator;
+        lodInfo.profilerManager = nullptr;  // No profiler needed for headless
+        lodInfo.parameterRegistry = nullptr;  // Use defaults
+        lodInfo.externalMemoryManager = m_externalMemory.get();  // Connect to external memory
+        
+        m_lodclusters = std::make_shared<lodclusters::LodClusters>(lodInfo);
+        m_lodclusters->setSupportsClusters(m_vkContext.hasExtensionEnabled(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME));
+        
+        // Create ElementPyBridge for frame synchronization
+        m_pybridge = std::make_shared<lodclusters::ElementPyBridge>();
+        m_pybridge->setExternalMemoryManager(m_externalMemory.get());
+        m_pybridge->setLodClustersElement(m_lodclusters.get());  // Connect to LodClusters!
+        
+        // Add elements in correct order: PyBridge first (camera control), LodClusters second (rendering)
+        m_app->addElement(m_pybridge);
+        m_app->addElement(m_lodclusters);
+        
+        printf("Vk2TorchApp: Real 3D rendering pipeline created successfully\n");
+        printf("             - LodClusters will render actual 3D geometry\n");
+        printf("             - PyBridge connected for frame synchronization\n");
+    }
+    
+    void loadDefaultScene() {
+        printf("Vk2TorchApp: Loading default 3D scene...\n");
+        
+        // Find bunny.gltf in standard locations (same logic as main.cpp)
+        std::filesystem::path scenePath;
+        
+        if (!m_scene_path.empty()) {
+            // User specified a scene path
+            scenePath = m_scene_path;
+            printf("Vk2TorchApp: Using user-specified scene: %s\n", scenePath.string().c_str());
+        } else {
+            // Search for default bunny scene
+            const std::vector<std::filesystem::path> searchPaths = {
+                std::filesystem::absolute(std::filesystem::current_path() / "_downloaded_resources"),
+                std::filesystem::absolute(std::filesystem::current_path() / "resources"),
+                std::filesystem::absolute(std::filesystem::current_path() / "../resources"),
+                std::filesystem::absolute(std::filesystem::current_path() / "downloads")
+            };
+            
+            bool foundBunny = false;
+            for (const auto& searchPath : searchPaths) {
+                auto fullPath = searchPath / "bunny_v2" / "bunny.gltf";
+                if (std::filesystem::exists(fullPath)) {
+                    scenePath = fullPath;
+                    foundBunny = true;
+                    printf("Vk2TorchApp: Found default bunny scene at: %s\n", scenePath.string().c_str());
+                    break;
+                }
+            }
+            
+            if (!foundBunny) {
+                printf("Vk2TorchApp: Warning - bunny.gltf not found, will use empty scene\n");
+                printf("             Search paths tried:\n");
+                for (const auto& searchPath : searchPaths) {
+                    printf("               %s/bunny_v2/bunny.gltf\n", searchPath.string().c_str());
+                }
+                return;  // Continue without scene - will render empty/test content
+            }
+        }
+        
+        // Initialize the scene in LodClusters using public onFileDrop method
+        if (m_lodclusters && std::filesystem::exists(scenePath)) {
+            // Use onFileDrop which is public and designed for loading scene files
+            m_lodclusters->onFileDrop(scenePath);
+            printf("Vk2TorchApp: ✅ 3D scene loading initiated: %s\n", scenePath.string().c_str());
+        } else {
+            printf("Vk2TorchApp: ⚠️ Scene file not found: %s\n", scenePath.string().c_str());
+        }
     }
     
     void startRenderThread() {
-        printf("Vk2TorchApp: Stub render thread start\n");
-        // TODO: Implement actual render thread
-        // For now, just mark as ready immediately
+        printf("Vk2TorchApp: Starting render thread...\n");
+        
+        m_running = true;
+        
+        m_renderThread = std::thread([this]() {
+            try {
+                printf("Vk2TorchApp: Render thread started, running application loop\n");
+                
+                // Wait for PyBridge to be ready
+                if (m_pybridge->waitForReady(10000)) {  // 10 second timeout
+                    m_ready = true;
+                    printf("Vk2TorchApp: PyBridge ready, application initialized\n");
+                    
+                    // Now load the default scene after application is fully ready
+                    loadDefaultScene();
+                } else {
+                    printf("Vk2TorchApp: Warning - PyBridge not ready within timeout\n");
+                }
+                
+                // Run the application loop
+                m_app->run();
+                
+                printf("Vk2TorchApp: Application loop exited\n");
+            } catch (const std::exception& e) {
+                printf("Vk2TorchApp: Render thread exception: %s\n", e.what());
+            }
+            
+            m_running = false;
+        });
+        
+        // Brief wait to ensure thread starts
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        
+        printf("Vk2TorchApp: Render thread started successfully\n");
     }
     
     void cleanup() {
-        printf("Vk2TorchApp: Stub cleanup\n");
+        printf("Vk2TorchApp: Cleaning up resources...\n");
         
-        // Clean up stub components
-        m_pybridge = nullptr;
-        m_externalMemory = nullptr;
+        // Clean up in reverse order of creation
+        if (m_app) {
+            m_app->deinit();
+            m_app.reset();
+        }
         
-        printf("Vk2TorchApp: Stub cleanup complete\n");
+        // Clean up elements
+        m_lodclusters.reset();
+        m_pybridge.reset();
+        
+        if (m_externalMemory) {
+            m_externalMemory->deinit();
+            m_externalMemory.reset();
+        }
+        
+        m_cameraManipulator.reset();
+        
+        m_vkContext.deinit();
+        
+        printf("Vk2TorchApp: Cleanup complete\n");
     }
 };
 
@@ -217,7 +402,7 @@ PYBIND11_MODULE(vk2torch_ext, m) {
         .def(py::init<int, int, bool, const std::string&>(),
              "Create Vk2TorchApp instance with headless Application",
              py::arg("width"), py::arg("height"), 
-             py::arg("raster") = true, py::arg("scene_path") = "matrix_city.glb")
+             py::arg("raster") = true, py::arg("scene_path") = "")
         
         // Dimensions and buffer info
         .def("size", &Vk2TorchApp::size,

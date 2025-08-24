@@ -1145,13 +1145,16 @@ void LodClusters::onRender(VkCommandBuffer cmd)
   {
     externalFrameCount++;
     
+    // Use the coordinated frame value from PyBridge
+    const uint64_t frame = m_frameConfig.externalMemoryManager->currentFrameValue();
+    
     VkSemaphoreSubmitInfo frameDoneSubmit{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     frameDoneSubmit.semaphore = m_frameConfig.externalMemoryManager->getFrameDoneSemaphore();
-    frameDoneSubmit.value = m_currentExternalFrameNumber;
+    frameDoneSubmit.value = frame;  // Use coordinated value instead of m_currentExternalFrameNumber
     frameDoneSubmit.stageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
     //if(verbose)
     {
-    LOGI("Frame %lu: Signaling frame done semaphore with value %lu (external frame count: %d, last signaled: %lu)\n", 
+    LOGI("Frame %lu: Signaling frame done semaphore with coordinated value %lu (external frame count: %d, last signaled: %lu)\n", 
          m_currentExternalFrameNumber, frameDoneSubmit.value, externalFrameCount, lastSignaledFrameNumber);
     
     }
@@ -1166,7 +1169,8 @@ void LodClusters::onRender(VkCommandBuffer cmd)
       //m_app->addSignalSemaphore(frameDoneSubmit);
        m_frameConfig.externalMemoryManager->signalFrameDone(frameDoneSubmit.value,m_app->getQueue(0).queue);
       if (verbose)
-       LOGI("Frame %lu: Frame done semaphore successfully added to submit\n", m_currentExternalFrameNumber);
+       LOGI("Frame %lu: Frame done semaphore successfully added to submit with coordinated value %lu\n", 
+            m_currentExternalFrameNumber, frame);
       
       // Don't clear here as it might be needed for image copy
     }

@@ -78,7 +78,7 @@ void Scene::ProcessingInfo::setupParallelism(size_t geometryCount_)
 
 void Scene::ProcessingInfo::logBegin()
 {
-  LOGI("... geometry load & processing: geometries %llu, threads outer %d inner %d\n", geometryCount, numOuterThreads, numInnerThreads);
+  LOGI("... geometry load & processing: geometries %lu, threads outer %d inner %d\n", static_cast<unsigned long>(geometryCount), numOuterThreads, numInnerThreads);
 
   startTime = clock.getMicroseconds();
 }

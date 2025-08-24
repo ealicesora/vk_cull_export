@@ -483,7 +483,7 @@ void LodClusters::onUIRender()
         ImGui::TableNextColumn();
         ImGui::Text("Rendered triangles");
         ImGui::TableNextColumn();
-        ImGui::Text("%llu", readback.numRenderedTriangles);
+        ImGui::Text("%lu", static_cast<unsigned long>(readback.numRenderedTriangles));
         ImGui::TableNextColumn();
         ImGui::Text("%s", formatMetric(readback.numRenderedTriangles).c_str());
         ImGui::TableNextRow();
@@ -854,7 +854,7 @@ void LodClusters::onUIRender()
   {
     ImGui::Text("Cluster max triangles: %d", m_scene->m_maxClusterTriangles);
     ImGui::Text("Cluster max vertices: %d", m_scene->m_maxClusterVertices);
-    ImGui::Text("Cluster count: %llu", m_scene->m_totalClustersCount);
+    ImGui::Text("Cluster count: %lu", static_cast<unsigned long>(m_scene->m_totalClustersCount));
     ImGui::Text("Clusters with config (%u) triangles: %u (%.1f%%)", m_scene->m_config.clusterTriangles,
                 m_scene->m_clusterTriangleHistogram.back(),
                 float(m_scene->m_clusterTriangleHistogram.back()) * 100.f / float(m_scene->m_totalClustersCount));
@@ -938,7 +938,7 @@ void LodClusters::onUIRender()
 
       ImGui::Text(" debugI :  %10d", readback.debugI);
       ImGui::Text(" debugUI:  %10u", readback.debugUI);
-      ImGui::Text(" debugU64:  %llX", readback.debugU64);
+      ImGui::Text(" debugU64:  %lX", static_cast<unsigned long>(readback.debugU64));
       static bool debugFloat = false;
       static bool debugHex   = false;
       static bool debugAll   = false;

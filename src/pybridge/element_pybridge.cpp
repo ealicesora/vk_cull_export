@@ -23,8 +23,6 @@
 #include <nvutils/logger.hpp>
 #include <chrono>
 
-// Use existing logging macros (already defined in nvutils/logger.hpp)
-
 namespace lodclusters {
 
 ElementPyBridge::ElementPyBridge() {
@@ -42,12 +40,26 @@ ElementPyBridge::~ElementPyBridge() {
 }
 
 void ElementPyBridge::onAttach(nvapp::Application* app) {
-  LOGI("Attaching PyBridge element\n");
-  // Initialization logic will be completed once connections are set
+  LOGI("PyBridge: Attaching element\n");
+  
+  // Get Vulkan device from application context
+  m_device = app->getDevice();
+  if (m_device == VK_NULL_HANDLE) {
+    LOGE("PyBridge: Failed to get Vulkan device from application\n");
+    return;
+  }
+  
+  // Create camera_ready timeline semaphore
+  if (!createCameraReadySemaphore()) {
+    LOGE("PyBridge: Failed to create camera ready timeline semaphore\n");
+    return;
+  }
+  
+  LOGI("PyBridge: Successfully attached with camera_ready timeline semaphore\n");
 }
 
 void ElementPyBridge::onDetach() {
-  LOGI("Deinitializing PyBridge element\n");
+  LOGI("PyBridge: Detaching element\n");
   
   // Wake up any waiting threads
   {
@@ -56,8 +68,14 @@ void ElementPyBridge::onDetach() {
     m_readyCondition.notify_all();
   }
   
+  // Destroy camera ready semaphore
+  destroyCameraReadySemaphore();
+  
   m_externalMemoryManager = nullptr;
   m_lodClustersElement = nullptr;
+  m_device = VK_NULL_HANDLE;
+  
+  LOGI("PyBridge: Element detached\n");
 }
 
 void ElementPyBridge::onRender(VkCommandBuffer cmd) {
@@ -66,9 +84,19 @@ void ElementPyBridge::onRender(VkCommandBuffer cmd) {
     return;
   }
 
+  uint64_t frameToRender = m_currentFrame;
+  
+  // Wait for camera_ready semaphore with current expected frame
+  if (m_cameraReadySemaphore != VK_NULL_HANDLE) {
+    if (waitForCameraReady(frameToRender, 16666667ULL)) {  // ~60fps timeout (16.6ms)
+      LOGI("PyBridge: Camera ready for frame %lu\n", frameToRender);
+    } else {
+      LOGW("PyBridge: Camera ready timeout for frame %lu, proceeding anyway\n", frameToRender);
+    }
+  }
+
   // Check if camera data needs updating
   bool updateCamera = false;
-  uint64_t frameToRender = m_currentFrame;
   std::array<float, 16> view, proj;
 
   if (m_cameraDirty.exchange(false)) {
@@ -80,20 +108,20 @@ void ElementPyBridge::onRender(VkCommandBuffer cmd) {
   }
 
   if (updateCamera) {
-    // Update camera UBO (reuse existing UDS logic from LodClusters)
+    // Update camera UBO
     updateCameraUBO(view.data(), proj.data());
     m_currentFrame = frameToRender;
-    LOGI("Updated camera for frame %lu\n", frameToRender);
+    LOGI("PyBridge: Updated camera for frame %lu\n", frameToRender);
   }
 
-  // Ensure depth-to-buffer copy is included in the command buffer
-  // This would typically be done by the LodClusters renderer
-  // For now, we'll just signal the frame as done
+  // Set coordinated frame value for LodClusters to use in timeline signals
+  m_externalMemoryManager->setCurrentFrameValue(frameToRender);
+  LOGI("PyBridge: Set coordinated frame value to %lu for LodClusters signal coordination\n", frameToRender);
 
   // Signal timeline semaphore with current frame number
   signalFrameDone(cmd, frameToRender);
 
-  // Mark as ready on first frame completion
+  // Mark as ready on first frame completion (FD export available)
   if (!m_firstFrameCompleted.exchange(true)) {
     markReady();
   }
@@ -104,6 +132,11 @@ void ElementPyBridge::onRender(VkCommandBuffer cmd) {
 void ElementPyBridge::setExternalMemoryManager(ExternalMemoryManager* manager) {
   m_externalMemoryManager = manager;
   LOGI("PyBridge: Connected to ExternalMemoryManager\n");
+  
+  // Test FD export availability
+  if (manager && manager->exportDepthBufferFdDup() >= 0) {
+    LOGI("PyBridge: ExternalMemoryManager FD export available\n");
+  }
 }
 
 void ElementPyBridge::setLodClustersElement(LodClusters* element) {
@@ -116,7 +149,14 @@ int ElementPyBridge::exportDepthBufferFdDup() const {
     LOGE("PyBridge: ExternalMemoryManager not connected\n");
     return -1;
   }
-  return m_externalMemoryManager->exportDepthBufferFdDup();
+  
+  int fd = m_externalMemoryManager->exportDepthBufferFdDup();
+  if (fd >= 0) {
+    LOGI("PyBridge: Successfully exported depth buffer FD (duplicated): %d\n", fd);
+  } else {
+    LOGE("PyBridge: Failed to export depth buffer FD\n");
+  }
+  return fd;
 }
 
 int ElementPyBridge::exportFrameDoneSemaphoreFdDup() const {
@@ -124,7 +164,14 @@ int ElementPyBridge::exportFrameDoneSemaphoreFdDup() const {
     LOGE("PyBridge: ExternalMemoryManager not connected\n");
     return -1;
   }
-  return m_externalMemoryManager->exportFrameDoneSemaphoreFdDup();
+  
+  int fd = m_externalMemoryManager->exportFrameDoneSemaphoreFdDup();
+  if (fd >= 0) {
+    LOGI("PyBridge: Successfully exported frame done semaphore FD (duplicated): %d\n", fd);
+  } else {
+    LOGE("PyBridge: Failed to export frame done semaphore FD\n");
+  }
+  return fd;
 }
 
 uint32_t ElementPyBridge::rowPitchBytes() const {
@@ -140,7 +187,7 @@ uint32_t ElementPyBridge::width() const {
     LOGE("PyBridge: ExternalMemoryManager not connected\n");
     return 0;
   }
-  return m_externalMemoryManager->getWidth();
+  return m_externalMemoryManager->extent().width;
 }
 
 uint32_t ElementPyBridge::height() const {
@@ -148,14 +195,14 @@ uint32_t ElementPyBridge::height() const {
     LOGE("PyBridge: ExternalMemoryManager not connected\n");
     return 0;
   }
-  return m_externalMemoryManager->getHeight();
+  return m_externalMemoryManager->extent().height;
 }
 
 uint64_t ElementPyBridge::lastSignaledFrame() const {
   return m_lastSignaledFrame;
 }
 
-void ElementPyBridge::updateCamera(uint64_t frame, const float view[16], const float proj[16]) {
+void ElementPyBridge::updateCameraAndSignal(uint64_t frame, const float view[16], const float proj[16]) {
   {
     std::lock_guard<std::mutex> lock(m_cameraMutex);
     m_desiredFrame = frame;
@@ -170,7 +217,10 @@ void ElementPyBridge::updateCamera(uint64_t frame, const float view[16], const f
   // Mark camera as dirty to trigger update in next onRender
   m_cameraDirty = true;
   
-  LOGI("PyBridge: Updated camera for frame %lu\n", frame);
+  // Signal camera_ready timeline semaphore with frame number (host-side signaling)
+  signalCameraReady(frame);
+  
+  LOGI("PyBridge: Updated camera and signaled ready for frame %lu\n", frame);
 }
 
 bool ElementPyBridge::waitForReady(uint32_t timeoutMs) {
@@ -206,6 +256,90 @@ void ElementPyBridge::markReady() {
   }
   m_readyCondition.notify_all();
   LOGI("PyBridge: Marked as ready for FD export\n");
+}
+
+// Camera ready timeline semaphore methods
+
+bool ElementPyBridge::createCameraReadySemaphore() {
+  if (m_device == VK_NULL_HANDLE) {
+    LOGE("PyBridge: Cannot create camera ready semaphore - no device\n");
+    return false;
+  }
+  
+  // Create timeline semaphore with initial value 0
+  VkSemaphoreTypeCreateInfo timelineCreateInfo{};
+  timelineCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+  timelineCreateInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+  timelineCreateInfo.initialValue = 0;
+
+  VkSemaphoreCreateInfo createInfo{};
+  createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+  createInfo.pNext = &timelineCreateInfo;
+
+  VkResult result = vkCreateSemaphore(m_device, &createInfo, nullptr, &m_cameraReadySemaphore);
+  if (result != VK_SUCCESS) {
+    LOGE("PyBridge: Failed to create camera ready timeline semaphore: VkResult=%d\n", static_cast<int>(result));
+    return false;
+  }
+
+  LOGI("PyBridge: Created camera_ready timeline semaphore successfully\n");
+  return true;
+}
+
+void ElementPyBridge::destroyCameraReadySemaphore() {
+  if (m_cameraReadySemaphore != VK_NULL_HANDLE && m_device != VK_NULL_HANDLE) {
+    vkDestroySemaphore(m_device, m_cameraReadySemaphore, nullptr);
+    m_cameraReadySemaphore = VK_NULL_HANDLE;
+    LOGI("PyBridge: Destroyed camera ready timeline semaphore\n");
+  }
+}
+
+void ElementPyBridge::signalCameraReady(uint64_t frame) {
+  if (m_cameraReadySemaphore == VK_NULL_HANDLE || m_device == VK_NULL_HANDLE) {
+    LOGW("PyBridge: Cannot signal camera ready - semaphore not available\n");
+    return;
+  }
+
+  // Host-side timeline semaphore signaling
+  VkSemaphoreSignalInfo signalInfo{};
+  signalInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
+  signalInfo.semaphore = m_cameraReadySemaphore;
+  signalInfo.value = frame;
+
+  VkResult result = vkSignalSemaphore(m_device, &signalInfo);
+  if (result != VK_SUCCESS) {
+    LOGE("PyBridge: Failed to signal camera ready semaphore for frame %lu: VkResult=%d\n", 
+         frame, static_cast<int>(result));
+  } else {
+    LOGI("PyBridge: Signaled camera_ready=%lu (host-side)\n", frame);
+  }
+}
+
+bool ElementPyBridge::waitForCameraReady(uint64_t frame, uint64_t timeoutNs) {
+  if (m_cameraReadySemaphore == VK_NULL_HANDLE || m_device == VK_NULL_HANDLE) {
+    LOGW("PyBridge: Cannot wait for camera ready - semaphore not available\n");
+    return false;
+  }
+
+  // Host-side timeline semaphore waiting
+  VkSemaphoreWaitInfo waitInfo{};
+  waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+  waitInfo.semaphoreCount = 1;
+  waitInfo.pSemaphores = &m_cameraReadySemaphore;
+  waitInfo.pValues = &frame;
+
+  VkResult result = vkWaitSemaphores(m_device, &waitInfo, timeoutNs);
+  if (result == VK_SUCCESS) {
+    LOGI("PyBridge: Camera ready wait succeeded for frame %lu\n", frame);
+    return true;
+  } else if (result == VK_TIMEOUT) {
+    LOGW("PyBridge: Camera ready wait timed out for frame %lu\n", frame);
+    return false;
+  } else {
+    LOGE("PyBridge: Camera ready wait failed for frame %lu: VkResult=%d\n", 
+         frame, static_cast<int>(result));
+    return false;
+  }
 }
 
 } // namespace lodclusters

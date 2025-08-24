@@ -51,7 +51,7 @@ public:
   uint32_t width() const;
   uint32_t height() const;
   uint64_t lastSignaledFrame() const;
-  void updateCamera(uint64_t frame, const float view[16], const float proj[16]);
+  void updateCameraAndSignal(uint64_t frame, const float view[16], const float proj[16]);
 
   // Wait for resources to be ready for export
   bool waitForReady(uint32_t timeoutMs = 5000);
@@ -60,6 +60,10 @@ private:
   // External connections
   ExternalMemoryManager* m_externalMemoryManager = nullptr;
   LodClusters* m_lodClustersElement = nullptr;
+  
+  // Vulkan context (for camera_ready timeline semaphore)
+  VkDevice m_device = VK_NULL_HANDLE;
+  VkSemaphore m_cameraReadySemaphore = VK_NULL_HANDLE;
 
   // Thread-safe camera state
   std::mutex m_cameraMutex;
@@ -83,6 +87,12 @@ private:
   void updateCameraUBO(const float view[16], const float proj[16]);
   void signalFrameDone(VkCommandBuffer cmd, uint64_t frame);
   void markReady();
+  
+  // Camera ready timeline semaphore methods
+  bool createCameraReadySemaphore();
+  void destroyCameraReadySemaphore();
+  void signalCameraReady(uint64_t frame);
+  bool waitForCameraReady(uint64_t frame, uint64_t timeoutNs = 1000000000ULL);  // 1 second default
 };
 
 } // namespace lodclusters

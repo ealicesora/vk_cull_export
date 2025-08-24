@@ -25,6 +25,7 @@
 #include <memory>
 #include <thread>
 #include <atomic>
+#include <mutex>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -126,6 +127,10 @@ public:
   }
   uint64_t getCurrentFrameNumber() const { return m_currentFrameNumber; }
 
+  // Frame number channel for PyBridge/LodClusters coordination
+  void setCurrentFrameValue(uint64_t v);      // Set by PyBridge before onRender
+  uint64_t currentFrameValue() const;         // Read by LodClusters onRender for signal value
+
   // Getters
   VkBuffer getCameraBuffer() const { return m_cameraBuffer; }
   VkBuffer getColorReadbackBuffer() const { return m_colorReadbackBuffer; }
@@ -195,6 +200,10 @@ private:
   
   // Frame counter for window mode protocol
   uint64_t m_currentFrameNumber = 1;
+  
+  // Frame number channel for PyBridge/LodClusters coordination
+  mutable std::mutex m_frameValueMutex;
+  uint64_t m_currentFrameValue = 1;  // Shared frame value for timeline signals
   
   // In-process mode file descriptors (stored for dup() export)
   int m_depthBufferFd = -1;

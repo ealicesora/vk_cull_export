@@ -609,3 +609,4 @@ The VK2Torch integration implements a minimal-socket design:
   - Frame synchronization via GPU timeline semaphores (imported during handshake)
   - Socket used only as fallback if shared memory unavailable (sends binary "CAM1" format or JSON)
 - This achieves near-zero CPU overhead for inter-process communication
+- never make a "simplified version without LodClusters dependency"

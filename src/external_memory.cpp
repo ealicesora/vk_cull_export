@@ -1565,4 +1565,15 @@ VkSemaphore ExternalMemoryManager::timelineSemaphore() const {
   return m_frameDoneSemaphore;
 }
 
+// Frame number channel for PyBridge/LodClusters coordination
+void ExternalMemoryManager::setCurrentFrameValue(uint64_t v) {
+  std::lock_guard<std::mutex> lock(m_frameValueMutex);
+  m_currentFrameValue = v;
+}
+
+uint64_t ExternalMemoryManager::currentFrameValue() const {
+  std::lock_guard<std::mutex> lock(m_frameValueMutex);
+  return m_currentFrameValue;
+}
+
 } // namespace lodclusters
