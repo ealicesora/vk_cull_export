@@ -65,7 +65,7 @@ except ImportError as e:
 # Configuration
 W, H = 1024, 1024
 ASSET_ROOT = os.getcwd()  # Current working directory
-N_FRAMES = 10
+N_FRAMES = 1000
 
 def make_camera_matrices(frame_num: int) -> tuple:
     """
@@ -204,8 +204,11 @@ def main():
         
         os.makedirs("out_depth", exist_ok=True)
         
-        start_time = time.time()
         
+        
+        app.headless_init()
+        
+        start_time = time.time()
         for frame_num in range(1, N_FRAMES + 1):
             # 6.1) Generate camera matrices for orbital motion
             proj_matrix, view_matrix = make_camera_matrices(frame_num)
@@ -213,33 +216,28 @@ def main():
             # 6.2) Set camera matrices via pybind11 (triggers camera ready signal internally)
             app.set_camera_matrices(proj_matrix, view_matrix)
             
-            # 6.3) Signal camera ready to timeline value N (additional explicit signal)
-            with stream:
-                signal_timeline(sem_camera, frame_num, stream.ptr)
             
-            # 6.4) Wait for frame done at timeline value N
-            # with stream:
-            #     print('-----------------wait_timeline(sem_frame, frame_num, stream.ptr)')
-            #     wait_timeline(sem_frame, frame_num, stream.ptr)
+            app.headless_step()
+            # time.sleep(1.0)
             
             # 6.5) Process and save depth frame
             depth_float = depth_d24_to_float(u32)  # Convert D24 to float32 [0,1]
             
             # Save selected frames
-            if frame_num % 100 == 0 or frame_num <= 10 or frame_num > N_FRAMES - 10:
-                # Copy to CPU for saving
-                depth_cpu = cp.asnumpy(depth_float)
-                np.save(f"out_depth/depth_{frame_num:04d}.npy", depth_cpu)
+            # if frame_num % 100 == 0 or frame_num <= 10 or frame_num > N_FRAMES - 10:
+            #     # Copy to CPU for saving
+            #     depth_cpu = cp.asnumpy(depth_float)
+            #     np.save(f"out_depth/depth_{frame_num:04d}.npy", depth_cpu)
                 
-                # Calculate statistics
-                valid_mask = depth_cpu > 0.0
-                if np.any(valid_mask):
-                    min_depth = np.min(depth_cpu[valid_mask])
-                    max_depth = np.max(depth_cpu[valid_mask])
-                    mean_depth = np.mean(depth_cpu[valid_mask])
-                    print(f"📸 Frame {frame_num:4d}: depth range [{min_depth:.3f}, {max_depth:.3f}], mean={mean_depth:.3f} - saved")
-                else:
-                    print(f"📸 Frame {frame_num:4d}: no valid depth data - saved")
+            #     # Calculate statistics
+            #     valid_mask = depth_cpu > 0.0
+            #     if np.any(valid_mask):
+            #         min_depth = np.min(depth_cpu[valid_mask])
+            #         max_depth = np.max(depth_cpu[valid_mask])
+            #         mean_depth = np.mean(depth_cpu[valid_mask])
+            #         print(f"📸 Frame {frame_num:4d}: depth range [{min_depth:.3f}, {max_depth:.3f}], mean={mean_depth:.3f} - saved")
+            #     else:
+            #         print(f"📸 Frame {frame_num:4d}: no valid depth data - saved")
             
             # Progress indicator  
             if frame_num % 50 == 0:

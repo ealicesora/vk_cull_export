@@ -131,7 +131,7 @@ public:
             
             initializeVulkan();
             createApplication();
-            startRenderThread();  // Scene will be loaded inside render thread
+            // startRenderThread();  // Scene will be loaded inside render thread
             
             printf("Vk2TorchApp: Successfully initialized with real 3D rendering\n");
         }
@@ -239,14 +239,15 @@ public:
         if (m_lodclusters) {
             m_lodclusters->enableOverrideCamera(proj, view);
             
-            // Signal camera ready if external memory manager is available
-            if (m_externalMemory) {
-                uint64_t frameValue = m_frameCounter.load();
-                m_externalMemory->signalCameraReady(frameValue);
-            }
+            // // Signal camera ready if external memory manager is available
+            // if (m_externalMemory) {
+            //     uint64_t frameValue = m_frameCounter.load();
+            //     m_externalMemory->signalCameraReady(frameValue);
+            // }
         } else {
             throw std::runtime_error("LodClusters not initialized");
         }
+
     }
 
     /**
@@ -649,7 +650,7 @@ private:
         m_pybridge->setLodClustersElement(m_lodclusters.get());  // Connect to LodClusters!
         
         // Add elements in correct order: PyBridge first (camera control), LodClusters second (rendering)
-        m_app->addElement(m_pybridge);
+        // m_app->addElement(m_pybridge);
         m_app->addElement(m_lodclusters);
         
         printf("Vk2TorchApp: Real 3D rendering pipeline created successfully\n");
@@ -709,41 +710,55 @@ private:
     
     void startRenderThread() {
         printf("Vk2TorchApp: Starting render thread...\n");
+        fflush(stdout);
         
         m_running = true;
         
-
+        printf("Vk2TorchApp: About to create std::thread...\n");
+        fflush(stdout);
+        //m_app->run();
         m_renderThread = std::thread([this]() {
-            m_app->run();
             try {
                 printf("Vk2TorchApp: Render thread started, running application loop\n");
+                fflush(stdout);
                 
+                printf("Vk2TorchApp: About to wait for PyBridge ready...\n");
+                fflush(stdout);
                 // Wait for PyBridge to be ready
                 if (m_pybridge->waitForReady(10000)) {  // 10 second timeout
                     m_ready = true;
                     printf("Vk2TorchApp: PyBridge ready, application initialized\n");
                     
+                    printf("Vk2TorchApp: About to load default scene...\n");
                     // Now load the default scene after application is fully ready
-                    loadDefaultScene();
+                    //loadDefaultScene();
+                    printf("Vk2TorchApp: Scene loaded successfully\n");
                 } else {
                     printf("Vk2TorchApp: Warning - PyBridge not ready within timeout\n");
                 }
                 
+                printf("Vk2TorchApp: About to start application run loop...\n");
                 // Run the application loop
-                // m_app->run();
+                //m_app->run();
                 
                 printf("Vk2TorchApp: Application loop exited\n");
             } catch (const std::exception& e) {
                 printf("Vk2TorchApp: Render thread exception: %s\n", e.what());
+            } catch (...) {
+                printf("Vk2TorchApp: Render thread unknown exception caught\n");
             }
             
             m_running = false;
         });
         
+        printf("Vk2TorchApp: std::thread created, waiting for it to start...\n");
+        fflush(stdout);
+        
         // Brief wait to ensure thread starts
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         
         printf("Vk2TorchApp: Render thread started successfully\n");
+        fflush(stdout);
     }
     
     void cleanup() {

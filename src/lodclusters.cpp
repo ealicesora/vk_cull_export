@@ -755,7 +755,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
   bool verbose = true;
 
 
-  LOGI("in on render");
+  LOGI("in on render\n");
   static int renderCount = 0;
   static int externalFrameCount = 0;
   if (renderCount < 10 || renderCount % 100 == 0) {
@@ -811,6 +811,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
   if(m_renderer)
   {
+    // printf("is really rendering");
     if(m_rendererFboChangeID != m_resources.m_fboChangeID)
     {
       m_renderer->updatedFrameBuffer(m_resources, *m_renderScene);
@@ -865,6 +866,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     
     // Camera override support for pybind11 integration
     if (m_useOverrideCamera) {
+      printf("using m_useOverrideCamera\n");
       projection = m_overrideProj;
       view = m_overrideView;
       viewI = glm::inverse(view);
@@ -958,7 +960,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
 
 
-    if(m_frameConfig.externalMemoryManager && m_frameConfig.externalMemoryManager->isConnected())
+    if(m_frameConfig.externalMemoryManager)
     {
   
       // Only process external memory protocol once per actual frame
@@ -970,7 +972,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
         shouldProcessExternalFrame = true;
         lastProcessedExternalFrame = currentFrame;
         
-        // Get the next frame number and use it consistently throughout this frame
+     
         uint64_t frameNumber = m_frameConfig.externalMemoryManager->getNextFrameNumber();
         
         // Store it for later use when signaling frame done
@@ -978,99 +980,10 @@ void LodClusters::onRender(VkCommandBuffer cmd)
         if (verbose)
         LOGI("====== Frame %lu: External memory protocol active (app frame: %lu, onRender: %d) ======\n", 
              frameNumber, currentFrame, renderCount - 1);
-      
-        // For the first few frames after connection, don't wait for camera ready
-        // This allows the render loop to start and Python to synchronize
-
-        // Wait for Python to signal camera ready
-        // This is a synchronous wait - the frame will not proceed until Python provides camera data
-        if (verbose)
-        LOGI("Frame %lu: Waiting for camera ready signal...\n", frameNumber);
-
-        if(true && !m_frameConfig.externalMemoryManager->waitForCameraReady(frameNumber))
-        {
-          LOGW("Frame %lu: Camera ready timeout, proceeding with existing camera data\n", frameNumber);
-        }
-        else
-        {
-          if (verbose)
-          LOGI("Frame %lu: Camera ready signal received, now receiving camera matrices...\n", frameNumber);
-          
-          // Receive camera matrices from Python via socket
-          float viewMatrix[16], projMatrix[16];
-          if (false || m_frameConfig.externalMemoryManager->receiveCameraMatrices(viewMatrix, projMatrix)) {
-            // Print received matrices in detail
-            if (verbose)
-            {
-              LOGI("Frame %lu: Received camera matrices from Python:\n", frameNumber);
-              LOGI("  View Matrix:\n");
-              for (int row = 0; row < 4; row++) {
-                LOGI("    [%8.4f %8.4f %8.4f %8.4f]\n", 
-                    viewMatrix[row*4], viewMatrix[row*4+1], 
-                    viewMatrix[row*4+2], viewMatrix[row*4+3]);
-              }
-              LOGI("  Projection Matrix:\n");
-              for (int row = 0; row < 4; row++) {
-                LOGI("    [%8.4f %8.4f %8.4f %8.4f]\n",
-                    projMatrix[row*4], projMatrix[row*4+1],
-                    projMatrix[row*4+2], projMatrix[row*4+3]);
-              }
-            }
-
-            
-            // Convert from float arrays to glm::mat4 (column-major)
-            glm::mat4 pythonView = glm::mat4(
-              viewMatrix[0], viewMatrix[1], viewMatrix[2], viewMatrix[3],
-              viewMatrix[4], viewMatrix[5], viewMatrix[6], viewMatrix[7],
-              viewMatrix[8], viewMatrix[9], viewMatrix[10], viewMatrix[11],
-              viewMatrix[12], viewMatrix[13], viewMatrix[14], viewMatrix[15]
-            );
-            
-            glm::mat4 pythonProj = glm::mat4(
-              projMatrix[0], projMatrix[1], projMatrix[2], projMatrix[3],
-              projMatrix[4], projMatrix[5], projMatrix[6], projMatrix[7],
-              projMatrix[8], projMatrix[9], projMatrix[10], projMatrix[11],
-              projMatrix[12], projMatrix[13], projMatrix[14], projMatrix[15]
-            );
-            
-            // Override the frame constants with Python's camera matrices
-            frameConstants.viewMatrix = pythonView;
-            frameConstants.projMatrix = pythonProj;
-            frameConstants.viewMatrixI = glm::inverse(pythonView);
-            frameConstants.projMatrixI = glm::inverse(pythonProj);
-            frameConstants.viewProjMatrix = pythonProj * pythonView;
-            frameConstants.viewProjMatrixI = glm::inverse(frameConstants.viewProjMatrix);
-            
-            // Update derived camera properties
-            frameConstants.viewPos = frameConstants.viewMatrixI[3];  // Camera position
-            frameConstants.viewDir = -frameConstants.viewMatrixI[2]; // Camera direction
-            frameConstants.viewPlane = frameConstants.viewDir;
-            frameConstants.viewPlane.w = -glm::dot(glm::vec3(frameConstants.viewPos), glm::vec3(frameConstants.viewDir));
-            
-            // Update sky matrix
-            glm::mat4 viewNoTrans = pythonView;
-            viewNoTrans[3] = {0.0f, 0.0f, 0.0f, 1.0f};
-            frameConstants.skyProjMatrixI = glm::inverse(pythonProj * viewNoTrans);
-            if (verbose)
-            {
-              // Print extracted camera information
-              LOGI("  Extracted Camera Position: [%.4f, %.4f, %.4f]\n",
-                  frameConstants.viewPos.x, frameConstants.viewPos.y, frameConstants.viewPos.z);
-              LOGI("  Extracted Camera Direction: [%.4f, %.4f, %.4f]\n",
-                  frameConstants.viewDir.x, frameConstants.viewDir.y, frameConstants.viewDir.z);
-              
-              LOGI("Frame %lu: Successfully updated frame constants with Python camera matrices\n", frameNumber);
-            }
-
-          
-          } else {
-            LOGW("Frame %lu: Failed to receive camera matrices, using default camera\n", frameNumber);
-          }
-        }
-
-          
         
-      }  // end if (currentFrame > lastProcessedExternalFrame)
+      }  
+      
+      // end if (currentFrame > lastProcessedExternalFrame)
     }  // end if (externalMemoryManager && isConnected)
 
     m_renderer->render(cmd, m_resources, *m_renderScene, m_frameConfig, m_profilerGpuTimer);
@@ -1088,7 +1001,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
   // External memory frame protocol integration (window mode)
   // Check if we have an active external frame number to process
-  if(m_frameConfig.externalMemoryManager && m_frameConfig.externalMemoryManager->isConnected() && m_currentExternalFrameNumber > 0)
+  if(m_frameConfig.externalMemoryManager)
   {
     // Choose the appropriate final color image (resolved if MSAA is used)
     VkImage finalImage = m_resources.m_frameBuffer.useResolved ? 
@@ -1134,54 +1047,17 @@ void LodClusters::onRender(VkCommandBuffer cmd)
   
   // Add frame done semaphore if we have an active external frame
   // CRITICAL: Only signal if we actually processed a NEW external frame this render call
-  static uint64_t lastSignaledFrameNumber = 0;
+  //static uint64_t lastSignaledFrameNumber = 0;
   
-  // Frame done signal
-  if(m_frameConfig.externalMemoryManager && m_frameConfig.externalMemoryManager->isConnected() 
-     && m_currentExternalFrameNumber > 0 
-     && m_currentExternalFrameNumber > lastSignaledFrameNumber)
-  {
-    externalFrameCount++;
-    
-    // Use the coordinated frame value from PyBridge
-    const uint64_t frame = m_frameConfig.externalMemoryManager->currentFrameValue();
-    
-    VkSemaphoreSubmitInfo frameDoneSubmit{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-    frameDoneSubmit.semaphore = m_frameConfig.externalMemoryManager->getFrameDoneSemaphore();
-    frameDoneSubmit.value = frame;  // Use coordinated value instead of m_currentExternalFrameNumber
-    frameDoneSubmit.stageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
-    //if(verbose)
-    {
-    LOGI("Frame %lu: Signaling frame done semaphore with coordinated value %lu (external frame count: %d, last signaled: %lu)\n", 
-         m_currentExternalFrameNumber, frameDoneSubmit.value, externalFrameCount, lastSignaledFrameNumber);
-    
-    }
 
-    // Double-check we're not signaling a duplicate or out-of-order value
-    if (frameDoneSubmit.value <= lastSignaledFrameNumber) {
-      LOGE("CRITICAL ERROR: Attempting to signal timeline semaphore with value %lu but already signaled %lu!\n", 
-           frameDoneSubmit.value, lastSignaledFrameNumber);
-      LOGE("SKIPPING frame done signal to prevent GPU crash\n");
-    } else {
-      lastSignaledFrameNumber = frameDoneSubmit.value;
-      //m_app->addSignalSemaphore(frameDoneSubmit);
-       m_frameConfig.externalMemoryManager->signalFrameDone(frameDoneSubmit.value,m_app->getQueue(0).queue);
-      if (verbose)
-       LOGI("Frame %lu: Frame done semaphore successfully added to submit with coordinated value %lu\n", 
-            m_currentExternalFrameNumber, frame);
-      
-      // Don't clear here as it might be needed for image copy
-    }
-  } else if (m_currentExternalFrameNumber > 0 && m_currentExternalFrameNumber == lastSignaledFrameNumber) {
-    LOGI("Frame %lu: Already signaled, skipping duplicate signal\n", m_currentExternalFrameNumber);
-  }
+
   // but also enqueue waits if there are any
   while(!m_resources.m_queueStates.primary.m_pendingWaits.empty())
   {
     m_app->addWaitSemaphore(m_resources.m_queueStates.primary.m_pendingWaits.back());
     m_resources.m_queueStates.primary.m_pendingWaits.pop_back();
   }
-
+  printf("finished rendering\n");
   m_lastTime = time;
   m_frames++;
 }
