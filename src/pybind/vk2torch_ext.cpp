@@ -655,6 +655,17 @@ private:
         m_lodclusters = std::make_shared<lodclusters::LodClusters>(lodInfo);
         m_lodclusters->setSupportsClusters(m_vkContext.hasExtensionEnabled(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME));
         
+        // Set the scene file path if provided by user
+        if (!m_scene_path.empty()) {
+            std::filesystem::path scenePath = m_scene_path;
+            if (!scenePath.is_absolute()) {
+                // Make it relative to asset root if it's a relative path
+                scenePath = m_assetRoot / scenePath;
+            }
+            m_lodclusters->setSceneFilePath(scenePath);
+            printf("Vk2TorchApp: Set scene file path: %s\n", scenePath.string().c_str());
+        }
+        
         // Add LodClusters element for rendering
         m_app->addElement(m_lodclusters);
         

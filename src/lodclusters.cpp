@@ -169,7 +169,7 @@ LodClusters::LodClusters(const Info& info)
   m_frameConfig.frameConstants.skyParams  = {};
 
   m_rendererConfig.twoSided = true;
-
+  m_tweak.useStreaming = false;
   m_rendererConfig.useCulling = false;
   // 只保留一份场景副本
   m_sceneGridConfig.numCopies = 1;
@@ -754,10 +754,10 @@ void LodClusters::handleChanges()
 void LodClusters::onRender(VkCommandBuffer cmd)
 {
 
-  bool verbose = true;
+  bool verbose = false;
 
 
-  LOGI("in on render\n");
+  
   static int renderCount = 0;
   static int externalFrameCount = 0;
   if (renderCount < 10 || renderCount % 100 == 0) {
@@ -1038,7 +1038,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
 
 
-     // if (verbose)
+     if (verbose)
      LOGI("Frame %lu: External memory copy added to command buffer\n", m_currentExternalFrameNumber);
   }
 
@@ -1059,7 +1059,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     m_app->addWaitSemaphore(m_resources.m_queueStates.primary.m_pendingWaits.back());
     m_resources.m_queueStates.primary.m_pendingWaits.pop_back();
   }
-  printf("finished rendering\n");
+
   m_lastTime = time;
   m_frames++;
 }

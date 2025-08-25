@@ -140,6 +140,9 @@ public:
   void enableOverrideCamera(const glm::mat4& proj, const glm::mat4& view);
   void disableOverrideCamera();
   void renderOneFrame(uint64_t frameValue);
+  
+  // Scene file path setter for vk2torch integration
+  void setSceneFilePath(const std::filesystem::path& filePath) { m_sceneFilePath = filePath; }
 
 private:
   VkExtent2D                 m_windowSize;

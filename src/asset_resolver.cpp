@@ -52,7 +52,7 @@ fs::path resolve_in(const fs::path& root, const std::string& rel, const std::vec
   for (const auto& sub : subdirs) {
     fs::path cand = sub.empty() ? (root / relp) : (root / sub / relp);
     if (fs::exists(cand)) {
-      LOGI("[assets] resolved '%s' -> %s\n", rel.c_str(), cand.string().c_str());
+     // LOGI("[assets] resolved '%s' -> %s\n", rel.c_str(), cand.string().c_str());
       return cand;
     }
   }

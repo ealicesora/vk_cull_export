@@ -492,8 +492,8 @@ bool ExternalMemoryManager::createExportableTimelineSemaphore(VkSemaphore* semap
     LOGE("Failed to create exportable timeline semaphore: %d\n", result);
     return false;
   }
-  LOGI("[DEBUG] Timeline semaphore created: handle=%p, initial_value=%lu\n", 
-       static_cast<void*>(*semaphore), initialValue);
+  //LOGI("[DEBUG] Timeline semaphore created: handle=%p, initial_value=%lu\n", 
+     //  static_cast<void*>(*semaphore), initialValue);
 
   // *fd = exportSemaphoreFd(*semaphore);
   // if (*fd < 0) {

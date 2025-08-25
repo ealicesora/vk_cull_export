@@ -129,14 +129,14 @@ except ImportError as e:
 # Configuration
 W, H = 1000, 1000
 ASSET_ROOT = os.getcwd()  # Current working directory
-N_FRAMES = 1000
+N_FRAMES = 10
 
 def make_camera_matrices(frame_num: int) -> tuple:
 
     R = np.array([[ 0.98822485,  0.11374114, -0.10234546],
                 [-0.11979481,  0.99127023, -0.05506844],
                 [ 0.09518846,  0.06668046,  0.99322348]], dtype=np.float32)
-    T = np.array([-2.80552141, -1.27673587,  3.06543639 + (frame_num-1) * 0.0], dtype=np.float32)
+    T = np.array([-2.80552141, -1.27673587,  3.06543639 + (frame_num-1) * 0.1], dtype=np.float32)
 
 
     Fx = 1208.1880959114053
@@ -234,9 +234,16 @@ def main():
         
         
         app.headless_init()
-
+        # compile operator
+        _ = depth_d24_to_float(u32)
+        cp.cuda.Stream.null.synchronize()
+        time.sleep(1.0)
         start_time = time.time()
+        frame_times = []
+        
         for frame_num in range(1, N_FRAMES + 1):
+            frame_start = time.time()
+            
             # 6.1) Generate camera matrices for orbital motion
             proj_matrix, view_matrix = make_camera_matrices(frame_num)
             
@@ -247,16 +254,24 @@ def main():
             app.headless_step()
             # time.sleep(1.0)
             
+
+            
             # 6.5) Process and save depth frame
             depth_float = depth_d24_to_float(u32)  # Convert D24 to float32 [0,1]
-            print(depth_float.shape)
-            # Save selected frames
+
+
+
+            frame_end = time.time()
+            frame_time_ms = (frame_end - frame_start) * 1000
+            frame_times.append(frame_time_ms)
+            print(f"Frame {frame_num:4d}: {frame_time_ms:6.2f}ms | depth shape: {depth_float.shape}")
             
-            # if frame_num % 100 == 0 or frame_num <= 10 or frame_num > N_FRAMES - 10:
-            #     # Copy to CPU for saving
-            #     depth_cpu = cp.asnumpy(depth_float)
-            #     save_depth_png(depth_cpu,f"out_depth/depth_{frame_num:04d}.png")
-            #     np.save(f"out_depth/depth_{frame_num:04d}.npy", depth_cpu)
+            # Save selected frames
+            if frame_num % 100 == 0 or frame_num <= 10 or frame_num > N_FRAMES - 10:
+                # Copy to CPU for saving
+                depth_cpu = cp.asnumpy(depth_float)
+                save_depth_png(depth_cpu,f"out_depth/depth_{frame_num:04d}.png")
+                np.save(f"out_depth/depth_{frame_num:04d}.npy", depth_cpu)
                 
             #     # Calculate statistics
             #     valid_mask = depth_cpu > 0.0
@@ -268,12 +283,20 @@ def main():
             #     else:
             #         print(f"📸 Frame {frame_num:4d}: no valid depth data - saved")
             
-            # Progress indicator  
+            # Progress indicator with frame timing stats
             if frame_num % 50 == 0:
                 elapsed = time.time() - start_time
                 fps = frame_num / elapsed
                 eta = (N_FRAMES - frame_num) / fps if fps > 0 else 0
+                
+                # Calculate frame timing statistics
+                recent_frames = frame_times[-50:] if len(frame_times) >= 50 else frame_times
+                avg_frame_time = np.mean(recent_frames)
+                min_frame_time = np.min(recent_frames)
+                max_frame_time = np.max(recent_frames)
+                
                 print(f"⏱️  Progress: {frame_num}/{N_FRAMES} ({100*frame_num/N_FRAMES:.1f}%) - {fps:.1f} FPS - ETA: {eta:.1f}s")
+                print(f"    Frame timing (last {len(recent_frames)}): avg={avg_frame_time:.1f}ms, min={min_frame_time:.1f}ms, max={max_frame_time:.1f}ms")
         
         # Final synchronization
         cp.cuda.Stream.null.synchronize()
@@ -282,13 +305,33 @@ def main():
         total_time = time.time() - start_time
         avg_fps = N_FRAMES / total_time
         
+        
+
+        # Calculate overall frame timing statistics
+        if frame_times:
+            avg_frame_time = np.mean(frame_times)
+            min_frame_time = np.min(frame_times)
+            max_frame_time = np.max(frame_times)
+            p50_frame_time = np.percentile(frame_times, 50)
+            p95_frame_time = np.percentile(frame_times, 95)
+            p99_frame_time = np.percentile(frame_times, 99)
+        
         print("=" * 60)
         print("🎉 Timeline Roundtrip Complete!")
         print(f"📊 Performance Summary:")
         print(f"    • Total frames: {N_FRAMES}")
-        print(f"    • Total time: {total_time:.2f} seconds") 
-        print(f"    • Average FPS: {avg_fps:.2f}")
-        print(f"    • Frame time: {1000/avg_fps:.2f} ms/frame")
+        print(f"    • Total time: {total_time:.2f} seconds")
+        print(f"    • Average FPS: {avg_fps:.1f}")
+        print(f"📏 Frame Timing Statistics:")
+        if frame_times:
+            print(f"    • Average: {avg_frame_time:.2f}ms ({1000/avg_frame_time:.1f} FPS)")
+            print(f"    • Minimum: {min_frame_time:.2f}ms ({1000/min_frame_time:.1f} FPS)")
+            print(f"    • Maximum: {max_frame_time:.2f}ms ({1000/max_frame_time:.1f} FPS)")
+            print(f"    • Median (P50): {p50_frame_time:.2f}ms")
+            print(f"    • P95: {p95_frame_time:.2f}ms")
+            print(f"    • P99: {p99_frame_time:.2f}ms")
+        else:
+            print("    • No frame timing data available")
         print(f"📁 Depth frames saved to: out_depth/")
         print(f"    • Saved frames: {len([f for f in os.listdir('out_depth') if f.endswith('.npy')])}")
         
