@@ -50,6 +50,11 @@ except ImportError as e:
     HAS_VK2TORCH = False
     ext = None
 
+def depth01_to_linear(depth01, znear, zfar):
+    # 适用于 Vulkan/D3D 的 0..1 深度（非 reversed-Z）
+    return (znear * zfar) / (zfar - depth01 * (zfar - znear))
+
+
 # Import utilities
 from vk2torch_utils import (
     to_vulkan_viewproj_match_nvdiffrast, 
@@ -71,10 +76,7 @@ class VK2TorchRenderer:
                  height: int,
                  scene_file: Union[str, Path],
                  asset_root: Union[str, Path], 
-                 *,
-                 use_raster: bool = True,
-                 znear: float = 0.1,
-                 zfar: float = 1000.0):
+                 ):
         """
         Initialize the VK2Torch renderer.
         
@@ -82,8 +84,6 @@ class VK2TorchRenderer:
             width, height: Render target dimensions
             scene_file: Path to scene file (relative to asset_root)
             asset_root: Root directory for assets (shaders, models, etc.)
-            use_raster: Use rasterization (True) or ray tracing (False)
-            znear, zfar: Near and far plane distances
         """
         # Validate dependencies
         if not HAS_CUDA:
@@ -98,9 +98,6 @@ class VK2TorchRenderer:
         self.height = height
         self.scene_file = Path(scene_file)
         self.asset_root = Path(asset_root)
-        self.use_raster = use_raster
-        self.znear = znear
-        self.zfar = zfar
         
         # State tracking
         self._app = None
@@ -133,7 +130,7 @@ class VK2TorchRenderer:
         self._app = ext.Vk2TorchApp(
             self.width, 
             self.height, 
-            self.use_raster,
+            True,
             str(self.scene_file),
             str(self.asset_root)
         )
@@ -150,7 +147,7 @@ class VK2TorchRenderer:
         
         # Get interop info
         self._interop_info = self._app.get_interop_info()
-        
+        time.sleep(1.0)
         # Import external memory
         buffer_size = int(self._interop_info['height']) * int(self._interop_info['row_pitch_bytes'])
         self._ext_mem, self._dev_ptr = import_ext_memory_fd(
@@ -194,10 +191,9 @@ class VK2TorchRenderer:
               fy: Optional[float] = None,
               cx: Optional[float] = None,
               cy: Optional[float] = None,
-              orbital_frame: Optional[int] = None,
-              orbital_radius: float = 5.0,
-              orbital_height: float = 2.0,
-              return_cpu: bool = False) -> Union[cp.ndarray, np.ndarray]:
+              znear: Optional[float] = 0.1,
+              zfar: Optional[float] = 1000
+              ):
         """
         Render a frame with the specified camera parameters.
         
@@ -229,30 +225,11 @@ class VK2TorchRenderer:
             cp.cuda.Stream.null.synchronize()
             time.sleep(0.1)  # Small delay for initialization
         
-        # Determine camera parameters
-        if orbital_frame is not None:
-            # Use orbital motion
-            camera_R, camera_T = create_orbital_camera(
-                orbital_frame, orbital_radius, orbital_height
-            )
-            
-        if camera_R is None or camera_T is None:
-            raise ValueError("Must provide either (camera_R, camera_T) or orbital_frame")
-        
-        # Set default intrinsics if not provided
-        if fx is None:
-            fx = self.width * 0.8  # Reasonable default
-        if fy is None:
-            fy = fx  # Square pixels
-        if cx is None:
-            cx = self.width / 2
-        if cy is None:
-            cy = self.height / 2
             
         # Convert to Vulkan matrices
         view_flat, proj_flat = to_vulkan_viewproj_match_nvdiffrast(
             camera_R, camera_T, fx, fy, cx, cy, 
-            self.width, self.height, self.znear, self.zfar
+            self.width, self.height, znear, zfar
         )
         
         proj_matrix = proj_flat.reshape([4, 4])
@@ -268,10 +245,10 @@ class VK2TorchRenderer:
         self._frame_count += 1
         
         # Return as requested type
-        if return_cpu:
-            return cp.asnumpy(depth_float)
-        else:
-            return depth_float
+        depth_torch = torch.utils.dlpack.from_dlpack(depth_float)  
+        depth_torch = depth01_to_linear(depth_torch,znear,zfar)
+        return depth_torch
+
     
     def render_batch(self,
                     camera_params_list: List[dict],
@@ -389,9 +366,6 @@ class VK2TorchRenderer:
             'height': self.height,
             'scene_file': str(self.scene_file),
             'asset_root': str(self.asset_root),
-            'use_raster': self.use_raster,
-            'znear': self.znear,
-            'zfar': self.zfar,
             'initialized': self._initialized,
             'cuda_ready': self._cuda_resources_ready,
             'frame_count': self._frame_count,
@@ -475,19 +449,3 @@ def quick_render(scene_file: str,
         return depths
 
 
-if __name__ == "__main__":
-    # Simple test
-    print("VK2TorchRenderer test")
-    
-    # Test with default scene
-    try:
-        depths = quick_render(
-            scene_file="house_new.glb",
-            asset_root=".",
-            orbital_frames=5
-        )
-        print(f"✅ Test successful: rendered {len(depths)} frames")
-    except Exception as e:
-        print(f"❌ Test failed: {e}")
-        import traceback
-        traceback.print_exc()

@@ -16,6 +16,9 @@ sys.path.append(str(Path(__file__).parent.parent))
 from vk2torch_renderer import VK2TorchRenderer
 from vk2torch_utils import save_depth_png
 
+
+
+
 def main():
     """Basic rendering example."""
     print("🎬 Basic VK2Torch Rendering Example")

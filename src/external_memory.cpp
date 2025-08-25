@@ -160,7 +160,7 @@ bool ExternalMemoryManager::initInProcess(VkDevice device, VkPhysicalDevice phys
     return true;
   }
 
-  LOGI("Initializing External Memory Manager in in-process mode\n");
+  // LOGI("Initializing External Memory Manager in in-process mode\n");
 
   // Check if required extensions are supported
   for (const auto& ext : getRequiredDeviceExtensions()) {
@@ -179,7 +179,7 @@ bool ExternalMemoryManager::initInProcess(VkDevice device, VkPhysicalDevice phys
   m_actualRowPitch = align_up(m_config.width * pixelSize, 256);
   depthBufferSize = m_actualRowPitch * m_config.height;
 
-  LOGI("Creating depth readback buffer (size: %zu bytes, row pitch: %u)\n", depthBufferSize, m_actualRowPitch);
+  //LOGI("Creating depth readback buffer (size: %zu bytes, row pitch: %u)\n", depthBufferSize, m_actualRowPitch);
   if (!createExportableBuffer(depthBufferSize,
                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                               &m_depthReadbackBuffer, &m_depthReadbackMemory, &m_depthBufferFd, 
@@ -375,7 +375,7 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
     return false;
   }
 
-  LOGI("External buffer export check passed (features: 0x%X)\n", ebp.externalMemoryProperties.externalMemoryFeatures);
+  //LOGI("External buffer export check passed (features: 0x%X)\n", ebp.externalMemoryProperties.externalMemoryFeatures);
   
   // Check if dedicated allocation is required
   const auto feats = ebp.externalMemoryProperties.externalMemoryFeatures;
@@ -419,7 +419,7 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
     exportAlloc.pNext = &dedicated;
     allocInfo.pNext = &exportAlloc;
     
-    LOGI("Applying VkMemoryDedicatedAllocateInfo to allocation\n");
+    // LOGI("Applying VkMemoryDedicatedAllocateInfo to allocation\n");
   } else {
     allocInfo.pNext = &exportAlloc;
   }
@@ -440,7 +440,7 @@ bool ExternalMemoryManager::createExportableBuffer(VkDeviceSize size, VkBufferUs
   }
   
   allocInfo.memoryTypeIndex = memTypeIndex;
-  LOGI("Using memory type index %u for external buffer\n", memTypeIndex);
+  // LOGI("Using memory type index %u for external buffer\n", memTypeIndex);
 
   result = vkAllocateMemory(m_device, &allocInfo, nullptr, memory);
   if (result != VK_SUCCESS) {
@@ -1201,7 +1201,7 @@ uint32_t ExternalMemoryManager::findMemoryTypeWithExport(uint32_t typeFilter, Vk
       // A more thorough check would require querying each memory type's export capabilities,
       // but Vulkan doesn't provide a direct API for that on a per-memory-type basis.
       
-      LOGI("Found memory type %u with properties 0x%X for external export\n", i, properties);
+      // LOGI("Found memory type %u with properties 0x%X for external export\n", i, properties);
       return i;
     }
   }
@@ -1725,7 +1725,7 @@ void ExternalMemoryManager::updateInteropInfo() {
     VkResult result = vkGetMemoryFdKHR(m_device, &fdInfo, &memFd);
     if (result == VK_SUCCESS) {
       m_interopInfo.depth_mem_fd = memFd;
-      LOGI("updateInteropInfo: Exported depth memory FD: %d\n", memFd);
+      //LOGI("updateInteropInfo: Exported depth memory FD: %d\n", memFd);
     } else {
       LOGE("updateInteropInfo: Failed to export depth memory FD: %d\n", result);
     }
@@ -1741,7 +1741,7 @@ void ExternalMemoryManager::updateInteropInfo() {
     VkResult result = vkGetSemaphoreFdKHR(m_device, &semFdInfo, &semFd);
     if (result == VK_SUCCESS) {
       m_interopInfo.scene_ready_sem_fd = semFd;
-      LOGI("updateInteropInfo: Exported scene ready semaphore FD: %d\n", semFd);
+      //LOGI("updateInteropInfo: Exported scene ready semaphore FD: %d\n", semFd);
     } else {
       LOGE("updateInteropInfo: Failed to export scene ready semaphore FD: %d\n", result);
     }
@@ -1757,7 +1757,7 @@ void ExternalMemoryManager::updateInteropInfo() {
     VkResult result = vkGetSemaphoreFdKHR(m_device, &semFdInfo, &semFd);
     if (result == VK_SUCCESS) {
       m_interopInfo.camera_ready_sem_fd = semFd;
-      LOGI("updateInteropInfo: Exported camera ready semaphore FD: %d\n", semFd);
+      //LOGI("updateInteropInfo: Exported camera ready semaphore FD: %d\n", semFd);
     } else {
       LOGE("updateInteropInfo: Failed to export camera ready semaphore FD: %d\n", result);
     }
@@ -1773,7 +1773,7 @@ void ExternalMemoryManager::updateInteropInfo() {
     VkResult result = vkGetSemaphoreFdKHR(m_device, &semFdInfo, &semFd);
     if (result == VK_SUCCESS) {
       m_interopInfo.frame_done_sem_fd = semFd;
-      LOGI("updateInteropInfo: Exported frame done semaphore FD: %d\n", semFd);
+      //LOGI("updateInteropInfo: Exported frame done semaphore FD: %d\n", semFd);
     } else {
       LOGE("updateInteropInfo: Failed to export frame done semaphore FD: %d\n", result);
     }
@@ -1785,9 +1785,9 @@ void ExternalMemoryManager::updateInteropInfo() {
     m_interopInfo.last_signaled_frame_done = m_lastSignaledPayload;
   }
   
-  LOGI("updateInteropInfo: Complete interop info updated - %dx%d, pitch=%d, size=%lu\n",
-       m_interopInfo.width, m_interopInfo.height, m_interopInfo.row_pitch_bytes, 
-       m_interopInfo.depth_mem_size);
+  // LOGI("updateInteropInfo: Complete interop info updated - %dx%d, pitch=%d, size=%lu\n",
+  //      m_interopInfo.width, m_interopInfo.height, m_interopInfo.row_pitch_bytes, 
+  //      m_interopInfo.depth_mem_size);
 }
 
 // Timeline semaphore coordination methods
