@@ -398,6 +398,38 @@ public:
     }
 
     /**
+     * Initialize headless rendering mode (three-part system)
+     * @return True if successful
+     */
+    bool headless_init() {
+        if (!m_app) {
+            throw std::runtime_error("Application not created");
+        }
+        return m_app->headlessInit();
+    }
+
+    /**
+     * Render one frame in headless mode (three-part system)
+     * @return True if more frames available, false when done
+     */
+    bool headless_step() {
+        if (!m_app) {
+            throw std::runtime_error("Application not created");
+        }
+        return m_app->headlessStep();
+    }
+
+    /**
+     * Shutdown headless rendering mode (three-part system)
+     */
+    void headless_shutdown() {
+        if (!m_app) {
+            throw std::runtime_error("Application not created");
+        }
+        m_app->headlessShutdown();
+    }
+
+    /**
      * Stop the Application and cleanup resources
      */
     void stop() {
@@ -796,6 +828,16 @@ PYBIND11_MODULE(vk2torch_ext, m) {
         
         .def("render_one_frame", &Vk2TorchApp::render_one_frame,
              "Render one frame with CPU control (for frame-by-frame Python control)")
+        
+        // Three-part headless control system
+        .def("headless_init", &Vk2TorchApp::headless_init,
+             "Initialize headless rendering mode (call once before headless_step)")
+        
+        .def("headless_step", &Vk2TorchApp::headless_step,
+             "Render one frame in headless mode, returns false when done")
+        
+        .def("headless_shutdown", &Vk2TorchApp::headless_shutdown,
+             "Shutdown headless rendering mode (call after headless_step returns false)")
         
         // Lifecycle management
         .def("stop", &Vk2TorchApp::stop,

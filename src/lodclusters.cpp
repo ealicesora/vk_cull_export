@@ -277,6 +277,7 @@ void LodClusters::onResize(VkCommandBuffer cmd, const VkExtent2D& size)
     m_renderer->updatedFrameBuffer(m_resources, *m_renderScene);
     m_rendererFboChangeID = m_resources.m_fboChangeID;
   }
+  printf("on resize\n");
 }
 
 void LodClusters::updateImguiImage()
@@ -752,47 +753,9 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 {
 
   bool verbose = true;
-  // if(m_app->isHeadless())
-  // {
-  //   // If we have external memory manager and scene is initialized, wait for connection
-  //   if (m_frameConfig.externalMemoryManager && m_sceneInitialized && 
-  //       !m_frameConfig.externalMemoryManager->isConnected()) 
-  //   {
-  //     if (!m_waitingForConnection) {
-  //       if (verbose)
-  //       {
-  //         LOGI("Scene initialized - waiting for Python client connection...\n");
-  //         LOGI("Blocking until Python connects to start rendering...\n");
-  //       }
 
-        
-  //       // In headless mode, block synchronously
-  //       if (m_app->isHeadless()) {
-  //         if (m_frameConfig.externalMemoryManager->acceptClient()) {
-  //           LOGI("Python client connected! Starting rendering...\n");
-  //         } else {
-  //           LOGE("Failed to accept Python client\n");
-  //           return;
-  //         }
-  //       } else {
-  //         // In GUI mode, just return and wait
-  //         m_waitingForConnection = true;
-  //         return;
-  //       }
-  //     } else {
-  //       // Still waiting in GUI mode
-  //       return;
-  //     }
-  //   }
-  //  }
-  // Reset waiting flag once connected
-  if (m_waitingForConnection && m_frameConfig.externalMemoryManager && 
-      m_frameConfig.externalMemoryManager->isConnected()) {
-    m_waitingForConnection = false;
-    if (verbose)
-    LOGI("Python client connected! Starting rendering...\n");
-  }
-   LOGI("in on render");
+
+  LOGI("in on render");
   static int renderCount = 0;
   static int externalFrameCount = 0;
   if (renderCount < 10 || renderCount % 100 == 0) {
@@ -1024,7 +987,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
         if (verbose)
         LOGI("Frame %lu: Waiting for camera ready signal...\n", frameNumber);
 
-        if(!m_frameConfig.externalMemoryManager->waitForCameraReady(frameNumber))
+        if(true && !m_frameConfig.externalMemoryManager->waitForCameraReady(frameNumber))
         {
           LOGW("Frame %lu: Camera ready timeout, proceeding with existing camera data\n", frameNumber);
         }
@@ -1112,14 +1075,14 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
     m_renderer->render(cmd, m_resources, *m_renderScene, m_frameConfig, m_profilerGpuTimer);
   }
-  else
-  {
-    m_resources.emptyFrame(cmd, m_frameConfig, m_profilerGpuTimer);
-  }
-  if (!m_app->isHeadless())
-  {
-    m_resources.postProcessFrame(cmd, m_frameConfig, m_profilerGpuTimer);
-  }
+  // else
+  // {
+  //   m_resources.emptyFrame(cmd, m_frameConfig, m_profilerGpuTimer);
+  // }
+  // if (!m_app->isHeadless())
+  // {
+  //   m_resources.postProcessFrame(cmd, m_frameConfig, m_profilerGpuTimer);
+  // }
 
  
 
@@ -1160,7 +1123,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
 
 
-      if (verbose)
+     // if (verbose)
      LOGI("Frame %lu: External memory copy added to command buffer\n", m_currentExternalFrameNumber);
   }
 

@@ -416,6 +416,8 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample, b
     m_frameBuffer.pipelineRenderingInfo = pipelineRenderingInfo;
   }
 
+
+  LOGI("finsih init frame buffers \n");
   return true;
 }
 

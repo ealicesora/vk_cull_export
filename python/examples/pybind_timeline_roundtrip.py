@@ -218,9 +218,9 @@ def main():
                 signal_timeline(sem_camera, frame_num, stream.ptr)
             
             # 6.4) Wait for frame done at timeline value N
-            with stream:
-                print('-----------------wait_timeline(sem_frame, frame_num, stream.ptr)')
-                wait_timeline(sem_frame, frame_num, stream.ptr)
+            # with stream:
+            #     print('-----------------wait_timeline(sem_frame, frame_num, stream.ptr)')
+            #     wait_timeline(sem_frame, frame_num, stream.ptr)
             
             # 6.5) Process and save depth frame
             depth_float = depth_d24_to_float(u32)  # Convert D24 to float32 [0,1]
