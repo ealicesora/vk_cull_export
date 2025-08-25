@@ -129,7 +129,7 @@ except ImportError as e:
 # Configuration
 W, H = 1000, 1000
 ASSET_ROOT = os.getcwd()  # Current working directory
-N_FRAMES = 10
+N_FRAMES = 20
 
 def make_camera_matrices(frame_num: int) -> tuple:
 
@@ -260,11 +260,11 @@ def main():
             # print(f"Frame {frame_num:4d}: {frame_time_ms:6.2f}ms | depth shape: {depth_float.shape}")
             
             # Save selected frames
-            # if frame_num % 100 == 0 or frame_num <= 10 or frame_num > N_FRAMES - 10:
-            #     # Copy to CPU for saving
-            #     depth_cpu = cp.asnumpy(depth_float)
-            #     save_depth_png(depth_cpu,f"out_depth/depth_{frame_num:04d}.png")
-            #     np.save(f"out_depth/depth_{frame_num:04d}.npy", depth_cpu)
+            if frame_num % 100 == 0 or frame_num <= 10 or frame_num > N_FRAMES - 10:
+                # Copy to CPU for saving
+                depth_cpu = cp.asnumpy(depth_float)
+                save_depth_png(depth_cpu,f"out_depth/depth_{frame_num:04d}.png")
+                np.save(f"out_depth/depth_{frame_num:04d}.npy", depth_cpu)
                 
             #     # Calculate statistics
             #     valid_mask = depth_cpu > 0.0

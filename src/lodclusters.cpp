@@ -412,7 +412,8 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_ui.enumAdd(GUI_BUILDMODE, 0, "default");
     m_ui.enumAdd(GUI_BUILDMODE, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR, "fast build");
     m_ui.enumAdd(GUI_BUILDMODE, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, "fast trace");
-
+    // override render to RENDERER_RASTER_CLUSTERS_LOD
+    m_tweak.renderer = RENDERER_RASTER_CLUSTERS_LOD;
     if(!m_resources.m_supportsClusters)
     {
       LOGW("WARNING: Cluster raytracing extension not supported\n");
