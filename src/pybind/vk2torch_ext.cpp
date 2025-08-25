@@ -195,12 +195,12 @@ public:
      */
     void set_camera_matrices(pybind11::array proj_arr, pybind11::array view_arr) {
         // Validate input arrays
-        if (proj_arr.ndim() != 2 || proj_arr.shape(0) != 4 || proj_arr.shape(1) != 4) {
-            throw std::runtime_error("proj must be 4x4 matrix");
-        }
-        if (view_arr.ndim() != 2 || view_arr.shape(0) != 4 || view_arr.shape(1) != 4) {
-            throw std::runtime_error("view must be 4x4 matrix");
-        }
+        // if (proj_arr.ndim() != 2 || proj_arr.shape(0) != 4 || proj_arr.shape(1) != 4) {
+        //     throw std::runtime_error("proj must be 4x4 matrix");
+        // }
+        // if (view_arr.ndim() != 2 || view_arr.shape(0) != 4 || view_arr.shape(1) != 4) {
+        //     throw std::runtime_error("view must be 4x4 matrix");
+        // }
 
         // Convert to float arrays (handle both float32 and float64)
         std::array<float, 16> proj_data{}, view_data{};

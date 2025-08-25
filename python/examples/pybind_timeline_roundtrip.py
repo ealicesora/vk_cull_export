@@ -22,6 +22,70 @@ import time
 import math
 import numpy as np
 
+
+
+import numpy as np
+
+def _frustum_offcenter_rh_zo(l, r, b, t, n, f):
+    # 右手、深度 0..1（与 glm::perspectiveRH_ZO 一致）
+    P = np.array([
+        [2*n/(r-l),      0.0,      (r+l)/(r-l),          0.0],
+        [0.0,        2*n/(t-b),    (t+b)/(t-b),          0.0],
+        [0.0,            0.0,          f/(n-f),    (f*n)/(n-f)],
+        [0.0,            0.0,            -1.0,          0.0],
+    ], dtype=np.float32)
+    return P
+
+def proj_from_intrinsics_vulkan(fx, fy, cx, cy, W, H, znear, zfar, *, flip_y=True):
+    # 近裁面上的 frustum 边界（相机坐标系 y↑、z 向里前提下）
+    l = -znear * (cx)      / fx
+    r =  znear * (W - cx)  / fx
+    t =  znear * (cy)      / fy
+    b = -znear * (H - cy)  / fy
+    P = _frustum_offcenter_rh_zo(l, r, b, t, znear, zfar)
+    if flip_y:                      # ★ Vulkan 常用：在投影里翻一次 Y
+        P[1, :] *= -1.0
+    return P
+
+def to_vulkan_viewproj_match_nvdiffrast(
+    R_ocv, T_ocv,           # 同一组输入 R,T（world->cam，OpenCV/Colmap 约定）
+    fx, fy, cx, cy, W, H, znear, zfar,
+    *,
+    nvdiffrast_world_is_z_up=True,   # 如果 nv 那边是 Z-up，而你的世界/Y-up，需要做基变换
+    your_world_is_y_up=False
+):
+    R_ocv = np.swapaxes(R_ocv, -1, -2)
+    R = np.asarray(R_ocv, np.float32)
+    t = np.asarray(T_ocv, np.float32).reshape(3,1)
+
+    # (可选) 基变换：把 Z-up 的世界坐标“翻译”为你这边的 Y-up
+    # A = Rx(+90°) : (x, y, z)_nv -> (x, z, -y)_your
+    # 对 world->cam：改变“世界基” => R' = R * A^{-1} = R * A^T
+    if nvdiffrast_world_is_z_up and your_world_is_y_up:
+        A = np.array([[1,0,0],
+                      [0,0,1],
+                      [0,-1,0]], dtype=np.float32)  # Rx(+90°)
+        R = R @ A.T
+        # t 不需要绕原点的基变换；如果你的世界原点与 nv 的不一致，再单独处理平移
+
+    # OpenCV/Colmap(x→,y↓,z→) -> GL/Vulkan 相机系(x→,y↑,z里)
+    S = np.diag([1.0, -1.0, -1.0]).astype(np.float32)
+    R_cam = S @ R
+    t_cam = S @ t
+
+    view = np.eye(4, dtype=np.float32)
+    view[:3,:3] = R_cam
+    view[:3, 3] = t_cam.ravel()
+
+    # 投影：为了与 nvdiffrast（OpenGL 栈）对齐且在 Vulkan 正显，翻一次 Y
+    proj = proj_from_intrinsics_vulkan(fx, fy, cx, cy, W, H, znear, zfar, flip_y=True)
+
+    # 以列主序展平给 Vulkan（和 glm::mat4(...) 构造一致）
+    return view.T.ravel(), proj.T.ravel()
+
+
+
+
 # Add parent directory to path for vk2torch_cuda import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -65,68 +129,31 @@ except ImportError as e:
 # Configuration
 W, H = 1024, 1024
 ASSET_ROOT = os.getcwd()  # Current working directory
-N_FRAMES = 1000
+N_FRAMES = 10
 
 def make_camera_matrices(frame_num: int) -> tuple:
-    """
-    Generate orbital camera matrices for given frame
+
+    R = np.array([[ 0.98822485,  0.11374114, -0.10234546],
+                [-0.11979481,  0.99127023, -0.05506844],
+                [ 0.09518846,  0.06668046,  0.99322348]], dtype=np.float32)
+    T = np.array([-2.80552141, -1.27673587,  3.06543639 + frame_num * 0.0], dtype=np.float32)
+
+
+    Fx = 1208.1880959114053
+    Fy = 1209.669871748316
+
+    W  = 1000
+    H  = 1000
+    Cx = W / 2
+    Cy = H / 2
+    znear, zfar = 0.1, 1000.0
+
+    view_flat, proj_flat = to_vulkan_viewproj_match_nvdiffrast(
+        R, T, Fx, Fy, Cx, Cy, W, H, znear, zfar
+    )
+
     
-    Args:
-        frame_num: Frame number for animation
-        
-    Returns:
-        Tuple of (projection_matrix, view_matrix) as float32 numpy arrays (row-major)
-    """
-    # Orbital camera parameters
-    t = frame_num * (2.0 * math.pi / N_FRAMES)  # Complete orbit over N_FRAMES
-    radius = 3.0
-    height = 1.5
-    
-    # Camera position (orbital motion)
-    eye = np.array([
-        math.cos(t) * radius,
-        height, 
-        math.sin(t) * radius
-    ], dtype=np.float32)
-    
-    # Look at center
-    center = np.array([0.0, 0.5, 0.0], dtype=np.float32)
-    up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-    
-    # Build view matrix (right-handed, column-major internally, then convert to row-major)
-    def normalize(v):
-        norm = np.linalg.norm(v)
-        return v / (norm + 1e-8)
-    
-    f = normalize(center - eye)  # Forward
-    s = normalize(np.cross(f, up))  # Right  
-    u = np.cross(s, f)  # Up
-    
-    # View matrix (column-major)
-    view_col_major = np.eye(4, dtype=np.float32)
-    view_col_major[0, :3] = s
-    view_col_major[1, :3] = u
-    view_col_major[2, :3] = -f
-    view_col_major[:3, 3] = -view_col_major[:3, :3] @ eye
-    
-    # Perspective projection matrix (column-major)  
-    fovy = math.radians(60.0)
-    aspect = float(W) / float(H)
-    near, far = 0.1, 100.0
-    
-    f_val = 1.0 / math.tan(fovy / 2.0)
-    proj_col_major = np.zeros((4, 4), dtype=np.float32)
-    proj_col_major[0, 0] = f_val / aspect
-    proj_col_major[1, 1] = f_val
-    proj_col_major[2, 2] = far / (far - near)
-    proj_col_major[2, 3] = (-far * near) / (far - near)
-    proj_col_major[3, 2] = 1.0
-    
-    # Convert to row-major for pybind11 (it will convert back to column-major internally)
-    proj_row_major = proj_col_major.T
-    view_row_major = view_col_major.T
-    
-    return proj_row_major, view_row_major
+    return proj_flat, view_flat
 
 def main():
     """Main timeline semaphore roundtrip example"""
@@ -207,7 +234,7 @@ def main():
         
         
         app.headless_init()
-        
+
         start_time = time.time()
         for frame_num in range(1, N_FRAMES + 1):
             # 6.1) Generate camera matrices for orbital motion
@@ -224,20 +251,20 @@ def main():
             depth_float = depth_d24_to_float(u32)  # Convert D24 to float32 [0,1]
             
             # Save selected frames
-            # if frame_num % 100 == 0 or frame_num <= 10 or frame_num > N_FRAMES - 10:
-            #     # Copy to CPU for saving
-            #     depth_cpu = cp.asnumpy(depth_float)
-            #     np.save(f"out_depth/depth_{frame_num:04d}.npy", depth_cpu)
+            if frame_num % 100 == 0 or frame_num <= 10 or frame_num > N_FRAMES - 10:
+                # Copy to CPU for saving
+                depth_cpu = cp.asnumpy(depth_float)
+                np.save(f"out_depth/depth_{frame_num:04d}.npy", depth_cpu)
                 
-            #     # Calculate statistics
-            #     valid_mask = depth_cpu > 0.0
-            #     if np.any(valid_mask):
-            #         min_depth = np.min(depth_cpu[valid_mask])
-            #         max_depth = np.max(depth_cpu[valid_mask])
-            #         mean_depth = np.mean(depth_cpu[valid_mask])
-            #         print(f"📸 Frame {frame_num:4d}: depth range [{min_depth:.3f}, {max_depth:.3f}], mean={mean_depth:.3f} - saved")
-            #     else:
-            #         print(f"📸 Frame {frame_num:4d}: no valid depth data - saved")
+                # Calculate statistics
+                valid_mask = depth_cpu > 0.0
+                if np.any(valid_mask):
+                    min_depth = np.min(depth_cpu[valid_mask])
+                    max_depth = np.max(depth_cpu[valid_mask])
+                    mean_depth = np.mean(depth_cpu[valid_mask])
+                    print(f"📸 Frame {frame_num:4d}: depth range [{min_depth:.3f}, {max_depth:.3f}], mean={mean_depth:.3f} - saved")
+                else:
+                    print(f"📸 Frame {frame_num:4d}: no valid depth data - saved")
             
             # Progress indicator  
             if frame_num % 50 == 0:
@@ -297,9 +324,3 @@ if __name__ == "__main__":
     print()
     main()
     
-    print("\n🎯 End-to-End Timeline Semaphore Integration: SUCCESS!")
-    print("✅ Pybind11 extension working correctly")
-    print("✅ Timeline semaphore coordination functioning")
-    print("✅ Zero-copy CUDA depth buffer access achieved")
-    print("✅ Orbital camera motion with 1000 frames completed")
-    print("✅ Production-ready pipeline demonstrated")
