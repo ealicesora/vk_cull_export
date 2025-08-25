@@ -59,7 +59,7 @@ vec4 getBoxCorner(vec3 bboxMin, vec3 bboxMax, int n)
 
 bool intersectFrustum(vec3 bboxMin, vec3 bboxMax, mat4 worldTM, out vec4 oClipmin, out vec4 oClipmax, out bool oClipvalid)
 {
-  mat4 worldViewProjTM = viewLast.viewProjMatrix * worldTM;
+  mat4 worldViewProjTM = view.viewProjMatrix * worldTM;
   bool valid;
   // clipspace bbox
   vec4 hPos     = worldViewProjTM * getBoxCorner(bboxMin, bboxMax, 0);
@@ -91,7 +91,7 @@ bool intersectFrustum(vec3 bboxMin, vec3 bboxMax, mat4 worldTM, out vec4 oClipmi
 
 bool intersectHiz(vec4 clipMin, vec4 clipMax)
 {
-  //return true;
+  return true;
   clipMin.xy = clipMin.xy * 0.5 + 0.5;
   clipMax.xy = clipMax.xy * 0.5 + 0.5;
   

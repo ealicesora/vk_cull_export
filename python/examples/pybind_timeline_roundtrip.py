@@ -214,8 +214,8 @@ def main():
         cp.cuda.Stream.null.synchronize()
         # print("✅ Scene ready - Vulkan rendering pipeline initialized")
         
-        5) Set up CuPy view of depth buffer (pitched for proper row alignment)
-        print(f"🖼️  Creating depth buffer view: {width}x{height}, pitch={pitch}")
+        # 5) Set up CuPy view of depth buffer (pitched for proper row alignment)
+        # print(f"🖼️  Creating depth buffer view: {width}x{height}, pitch={pitch}")
         
         # Create pitched array view (full width including padding)
         u32_pitched = make_pitched_cupy_array(dev_ptr.value, pitch, width, height, np.uint32)
@@ -260,11 +260,11 @@ def main():
             # print(f"Frame {frame_num:4d}: {frame_time_ms:6.2f}ms | depth shape: {depth_float.shape}")
             
             # Save selected frames
-            if frame_num % 100 == 0 or frame_num <= 10 or frame_num > N_FRAMES - 10:
-                # Copy to CPU for saving
-                depth_cpu = cp.asnumpy(depth_float)
-                save_depth_png(depth_cpu,f"out_depth/depth_{frame_num:04d}.png")
-                np.save(f"out_depth/depth_{frame_num:04d}.npy", depth_cpu)
+            # if frame_num % 100 == 0 or frame_num <= 10 or frame_num > N_FRAMES - 10:
+            #     # Copy to CPU for saving
+            #     depth_cpu = cp.asnumpy(depth_float)
+            #     save_depth_png(depth_cpu,f"out_depth/depth_{frame_num:04d}.png")
+            #     np.save(f"out_depth/depth_{frame_num:04d}.npy", depth_cpu)
                 
             #     # Calculate statistics
             #     valid_mask = depth_cpu > 0.0
