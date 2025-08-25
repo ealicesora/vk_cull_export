@@ -850,8 +850,8 @@ void ExternalMemoryManager::cmdCopyDepthToBuffer(VkCommandBuffer cmd,
                          0, 0, nullptr, 0, nullptr, 1, &postStencil);
   }
   
-  LOGI("Depth copy command added: %ux%u -> buffer (row pitch: %u)\n", width, height, 
-       m_inProcessMode ? m_actualRowPitch : (width * 4));
+  // LOGI("Depth copy command added: %ux%u -> buffer (row pitch: %u)\n", width, height, 
+  //      m_inProcessMode ? m_actualRowPitch : (width * 4));
 #endif
 }
 

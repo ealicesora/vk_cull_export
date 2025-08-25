@@ -868,7 +868,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     
     // Camera override support for pybind11 integration
     if (m_useOverrideCamera) {
-      printf("using m_useOverrideCamera\n");
+      // printf("using m_useOverrideCamera\n");
       projection = m_overrideProj;
       view = m_overrideView;
       viewI = glm::inverse(view);

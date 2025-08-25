@@ -264,7 +264,7 @@ def main():
             frame_end = time.time()
             frame_time_ms = (frame_end - frame_start) * 1000
             frame_times.append(frame_time_ms)
-            print(f"Frame {frame_num:4d}: {frame_time_ms:6.2f}ms | depth shape: {depth_float.shape}")
+            # print(f"Frame {frame_num:4d}: {frame_time_ms:6.2f}ms | depth shape: {depth_float.shape}")
             
             # Save selected frames
             if frame_num % 100 == 0 or frame_num <= 10 or frame_num > N_FRAMES - 10:
