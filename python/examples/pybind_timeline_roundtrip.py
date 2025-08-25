@@ -129,7 +129,7 @@ except ImportError as e:
 # Configuration
 W, H = 1024, 1024
 ASSET_ROOT = os.getcwd()  # Current working directory
-N_FRAMES = 1000
+N_FRAMES = 10
 
 def make_camera_matrices(frame_num: int) -> tuple:
     """

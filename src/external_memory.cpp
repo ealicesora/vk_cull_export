@@ -217,14 +217,14 @@ bool ExternalMemoryManager::initInProcess(VkDevice device, VkPhysicalDevice phys
   LOGI("[DEBUG] Created camera_ready timeline semaphore: handle=%p, FD=%d, initial_value=0\n", 
        static_cast<void*>(m_cameraReadyTimeline), cameraReadyFd);
 
-  // Debug summary table of all three timeline semaphores
-  LOGI("[DEBUG] ========== Timeline Semaphores Summary ==========\n");
-  LOGI("[DEBUG] | Name           | VkSemaphore Handle | FD | Initial |\n");
-  LOGI("[DEBUG] |----------------|--------------------|----|---------|");
-  LOGI("[DEBUG] | frame_done     | %18p | %2d |    0    |\n", static_cast<void*>(m_frameDoneSemaphore), m_frameDoneSemaphoreFd);
-  LOGI("[DEBUG] | scene_ready    | %18p | %2d |    0    |\n", static_cast<void*>(m_sceneReadyTimeline), sceneReadyFd);
-  LOGI("[DEBUG] | camera_ready   | %18p | %2d |    0    |\n", static_cast<void*>(m_cameraReadyTimeline), cameraReadyFd);
-  LOGI("[DEBUG] ==================================================\n");
+  // // Debug summary table of all three timeline semaphores
+  // LOGI("[DEBUG] ========== Timeline Semaphores Summary ==========\n");
+  // LOGI("[DEBUG] | Name           | VkSemaphore Handle | FD | Initial |\n");
+  // LOGI("[DEBUG] |----------------|--------------------|----|---------|");
+  // LOGI("[DEBUG] | frame_done     | %18p | %2d |    0    |\n", static_cast<void*>(m_frameDoneSemaphore), m_frameDoneSemaphoreFd);
+  // LOGI("[DEBUG] | scene_ready    | %18p | %2d |    0    |\n", static_cast<void*>(m_sceneReadyTimeline), sceneReadyFd);
+  // LOGI("[DEBUG] | camera_ready   | %18p | %2d |    0    |\n", static_cast<void*>(m_cameraReadyTimeline), cameraReadyFd);
+  // LOGI("[DEBUG] ==================================================\n");
 
   // Stage 4: Populate both export info structures with FD export now that resources are created
   updateExportInfo();
@@ -495,14 +495,14 @@ bool ExternalMemoryManager::createExportableTimelineSemaphore(VkSemaphore* semap
   LOGI("[DEBUG] Timeline semaphore created: handle=%p, initial_value=%lu\n", 
        static_cast<void*>(*semaphore), initialValue);
 
-  *fd = exportSemaphoreFd(*semaphore);
-  if (*fd < 0) {
-    LOGE("Failed to export semaphore FD\n");
-    vkDestroySemaphore(m_device, *semaphore, nullptr);
-    return false;
-  }
-  LOGI("[DEBUG] Timeline semaphore FD exported: handle=%p, FD=%d\n", 
-       static_cast<void*>(*semaphore), *fd);
+  // *fd = exportSemaphoreFd(*semaphore);
+  // if (*fd < 0) {
+  //   LOGE("Failed to export semaphore FD\n");
+  //   vkDestroySemaphore(m_device, *semaphore, nullptr);
+  //   return false;
+  // }
+  // LOGI("[DEBUG] Timeline semaphore FD exported: handle=%p, FD=%d\n", 
+  //      static_cast<void*>(*semaphore), *fd);
 
   return true;
 #endif
