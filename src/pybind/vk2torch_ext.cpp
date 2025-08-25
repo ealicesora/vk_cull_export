@@ -30,6 +30,7 @@
 #include <mutex>
 #include <atomic>
 #include <cstdio>
+#include <cstring>
 #include <condition_variable>
 #include <chrono>
 
@@ -48,7 +49,6 @@
 
 // Project includes
 #include "core/context_bootstrap.hpp"
-#include "pybridge/element_pybridge.hpp"
 #include "external_memory.hpp"
 #include "lodclusters.hpp"
 #include "scene.hpp"
@@ -102,7 +102,7 @@ static std::filesystem::path resolve_asset(const std::filesystem::path& assetRoo
  * Vk2TorchApp - Main interface class for in-process VK2Torch integration
  * 
  * This class creates and manages an nvapp::Application running in headless mode,
- * with LodClusters and ElementPyBridge components for zero-copy CUDA integration.
+ * with LodClusters component for zero-copy CUDA integration.
  */
 class Vk2TorchApp {
 public:
@@ -285,8 +285,9 @@ public:
      * @return Row pitch in bytes from ExternalMemoryManager
      */
     int row_pitch_bytes() const {
-        if (m_pybridge) {
-            return m_pybridge->rowPitchBytes();
+        if (m_externalMemory) {
+            auto info = m_externalMemory->getDepthExportInfo();
+            return info.row_pitch_bytes;
         }
         return m_width * 4;  // Fallback
     }
@@ -296,8 +297,9 @@ public:
      * @return Duplicated file descriptor (caller must close)
      */
     int export_depth_buffer_fd() const {
-        if (m_pybridge) {
-            return m_pybridge->exportDepthBufferFdDup();
+        if (m_externalMemory) {
+            auto info = m_externalMemory->getDepthExportInfo();
+            return (info.memory_fd >= 0) ? ::dup(info.memory_fd) : -1;
         }
         printf("Vk2TorchApp: export_depth_buffer_fd() - not ready\n");
         return -1;  // Not ready
@@ -308,8 +310,9 @@ public:
      * @return Duplicated file descriptor (caller must close)
      */
     int export_frame_done_semaphore_fd() const {
-        if (m_pybridge) {
-            return m_pybridge->exportFrameDoneSemaphoreFdDup();
+        if (m_externalMemory) {
+            auto info = m_externalMemory->getDepthExportInfo();
+            return (info.timeline_semaphore_fd >= 0) ? ::dup(info.timeline_semaphore_fd) : -1;
         }
         printf("Vk2TorchApp: export_frame_done_semaphore_fd() - not ready\n");
         return -1;  // Not ready
@@ -322,8 +325,16 @@ public:
      * @param proj 4x4 projection matrix in column-major order
      */
     void set_camera(uint64_t frame, const std::array<float, 16>& view, const std::array<float, 16>& proj) {
-        if (m_pybridge) {
-            m_pybridge->updateCameraAndSignal(frame, view.data(), proj.data());
+        // Convert arrays to GLM matrices
+        glm::mat4 viewMat(1.0f), projMat(1.0f);
+        std::memcpy(&viewMat[0][0], view.data(), 16 * sizeof(float));
+        std::memcpy(&projMat[0][0], proj.data(), 16 * sizeof(float));
+        
+        if (m_lodclusters) {
+            m_lodclusters->enableOverrideCamera(projMat, viewMat);
+            if (m_externalMemory) {
+                m_externalMemory->signalCameraReady(frame);
+            }
         } else {
             printf("Vk2TorchApp: set_camera(frame=%lu) - not ready\n", frame);
         }
@@ -334,8 +345,9 @@ public:
      * @return Timeline semaphore value for last completed frame
      */
     uint64_t last_signaled_frame() const {
-        if (m_pybridge) {
-            return m_pybridge->lastSignaledFrame();
+        if (m_externalMemory) {
+            auto info = m_externalMemory->getInteropInfo();
+            return info.last_signaled_frame_done;
         }
         return 0;
     }
@@ -465,7 +477,6 @@ private:
     nvvk::Context m_vkContext;
     std::unique_ptr<nvapp::Application> m_app;
     std::unique_ptr<lodclusters::ExternalMemoryManager> m_externalMemory;
-    std::shared_ptr<lodclusters::ElementPyBridge> m_pybridge;
     std::shared_ptr<lodclusters::LodClusters> m_lodclusters;
     std::unique_ptr<nvutils::ProfilerManager>   m_profilerManager;
     std::unique_ptr<nvutils::ParameterRegistry> m_parameterRegistry;
@@ -644,18 +655,11 @@ private:
         m_lodclusters = std::make_shared<lodclusters::LodClusters>(lodInfo);
         m_lodclusters->setSupportsClusters(m_vkContext.hasExtensionEnabled(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME));
         
-        // Create ElementPyBridge for frame synchronization
-        m_pybridge = std::make_shared<lodclusters::ElementPyBridge>();
-        m_pybridge->setExternalMemoryManager(m_externalMemory.get());
-        m_pybridge->setLodClustersElement(m_lodclusters.get());  // Connect to LodClusters!
-        
-        // Add elements in correct order: PyBridge first (camera control), LodClusters second (rendering)
-        // m_app->addElement(m_pybridge);
+        // Add LodClusters element for rendering
         m_app->addElement(m_lodclusters);
         
         printf("Vk2TorchApp: Real 3D rendering pipeline created successfully\n");
         printf("             - LodClusters will render actual 3D geometry\n");
-        printf("             - PyBridge connected for frame synchronization\n");
     }
     
     void loadDefaultScene() {
@@ -710,36 +714,22 @@ private:
     
     void startRenderThread() {
         printf("Vk2TorchApp: Starting render thread...\n");
-        fflush(stdout);
         
         m_running = true;
         
-        printf("Vk2TorchApp: About to create std::thread...\n");
-        fflush(stdout);
-        //m_app->run();
         m_renderThread = std::thread([this]() {
             try {
                 printf("Vk2TorchApp: Render thread started, running application loop\n");
-                fflush(stdout);
                 
-                printf("Vk2TorchApp: About to wait for PyBridge ready...\n");
-                fflush(stdout);
-                // Wait for PyBridge to be ready
-                if (m_pybridge->waitForReady(10000)) {  // 10 second timeout
-                    m_ready = true;
-                    printf("Vk2TorchApp: PyBridge ready, application initialized\n");
-                    
-                    printf("Vk2TorchApp: About to load default scene...\n");
-                    // Now load the default scene after application is fully ready
-                    //loadDefaultScene();
-                    printf("Vk2TorchApp: Scene loaded successfully\n");
-                } else {
-                    printf("Vk2TorchApp: Warning - PyBridge not ready within timeout\n");
-                }
+                // Application is ready immediately without PyBridge
+                m_ready = true;
+                printf("Vk2TorchApp: Application initialized\n");
                 
-                printf("Vk2TorchApp: About to start application run loop...\n");
+                // Load the default scene
+                loadDefaultScene();
+                
                 // Run the application loop
-                //m_app->run();
+                m_app->run();
                 
                 printf("Vk2TorchApp: Application loop exited\n");
             } catch (const std::exception& e) {
@@ -751,14 +741,10 @@ private:
             m_running = false;
         });
         
-        printf("Vk2TorchApp: std::thread created, waiting for it to start...\n");
-        fflush(stdout);
-        
         // Brief wait to ensure thread starts
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         
         printf("Vk2TorchApp: Render thread started successfully\n");
-        fflush(stdout);
     }
     
     void cleanup() {
@@ -772,7 +758,6 @@ private:
         
         // Clean up elements
         m_lodclusters.reset();
-        m_pybridge.reset();
         
         if (m_externalMemory) {
             m_externalMemory->deinit();

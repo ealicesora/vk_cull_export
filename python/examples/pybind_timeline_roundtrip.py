@@ -129,31 +129,68 @@ except ImportError as e:
 # Configuration
 W, H = 1024, 1024
 ASSET_ROOT = os.getcwd()  # Current working directory
-N_FRAMES = 10
+N_FRAMES = 1000
 
 def make_camera_matrices(frame_num: int) -> tuple:
-
-    R = np.array([[ 0.98822485,  0.11374114, -0.10234546],
-                [-0.11979481,  0.99127023, -0.05506844],
-                [ 0.09518846,  0.06668046,  0.99322348]], dtype=np.float32)
-    T = np.array([-2.80552141, -1.27673587,  3.06543639 + frame_num * 0.0], dtype=np.float32)
-
-
-    Fx = 1208.1880959114053
-    Fy = 1209.669871748316
-
-    W  = 1000
-    H  = 1000
-    Cx = W / 2
-    Cy = H / 2
-    znear, zfar = 0.1, 1000.0
-
-    view_flat, proj_flat = to_vulkan_viewproj_match_nvdiffrast(
-        R, T, Fx, Fy, Cx, Cy, W, H, znear, zfar
-    )
-
+    """
+    Generate orbital camera matrices for given frame
     
-    return proj_flat, view_flat
+    Args:
+        frame_num: Frame number for animation
+        
+    Returns:
+        Tuple of (projection_matrix, view_matrix) as float32 numpy arrays (row-major)
+    """
+    # Orbital camera parameters
+    t = frame_num * (2.0 * math.pi / N_FRAMES)  # Complete orbit over N_FRAMES
+    radius = 3.0
+    height = 1.5
+    
+    # Camera position (orbital motion)
+    eye = np.array([
+        math.cos(t) * radius,
+        height, 
+        math.sin(t) * radius
+    ], dtype=np.float32)
+    
+    # Look at center
+    center = np.array([0.0, 0.5, 0.0], dtype=np.float32)
+    up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    
+    # Build view matrix (right-handed, column-major internally, then convert to row-major)
+    def normalize(v):
+        norm = np.linalg.norm(v)
+        return v / (norm + 1e-8)
+    
+    f = normalize(center - eye)  # Forward
+    s = normalize(np.cross(f, up))  # Right  
+    u = np.cross(s, f)  # Up
+    
+    # View matrix (column-major)
+    view_col_major = np.eye(4, dtype=np.float32)
+    view_col_major[0, :3] = s
+    view_col_major[1, :3] = u
+    view_col_major[2, :3] = -f
+    view_col_major[:3, 3] = -view_col_major[:3, :3] @ eye
+    
+    # Perspective projection matrix (column-major)  
+    fovy = math.radians(60.0)
+    aspect = float(W) / float(H)
+    near, far = 0.1, 100.0
+    
+    f_val = 1.0 / math.tan(fovy / 2.0)
+    proj_col_major = np.zeros((4, 4), dtype=np.float32)
+    proj_col_major[0, 0] = f_val / aspect
+    proj_col_major[1, 1] = f_val
+    proj_col_major[2, 2] = far / (far - near)
+    proj_col_major[2, 3] = (-far * near) / (far - near)
+    proj_col_major[3, 2] = 1.0
+    
+    # Convert to row-major for pybind11 (it will convert back to column-major internally)
+    proj_row_major = proj_col_major.T
+    view_row_major = view_col_major.T
+    
+    return proj_row_major, view_row_major
 
 def main():
     """Main timeline semaphore roundtrip example"""
@@ -251,20 +288,20 @@ def main():
             depth_float = depth_d24_to_float(u32)  # Convert D24 to float32 [0,1]
             
             # Save selected frames
-            if frame_num % 100 == 0 or frame_num <= 10 or frame_num > N_FRAMES - 10:
-                # Copy to CPU for saving
-                depth_cpu = cp.asnumpy(depth_float)
-                np.save(f"out_depth/depth_{frame_num:04d}.npy", depth_cpu)
+            # if frame_num % 100 == 0 or frame_num <= 10 or frame_num > N_FRAMES - 10:
+            #     # Copy to CPU for saving
+            #     depth_cpu = cp.asnumpy(depth_float)
+            #     np.save(f"out_depth/depth_{frame_num:04d}.npy", depth_cpu)
                 
-                # Calculate statistics
-                valid_mask = depth_cpu > 0.0
-                if np.any(valid_mask):
-                    min_depth = np.min(depth_cpu[valid_mask])
-                    max_depth = np.max(depth_cpu[valid_mask])
-                    mean_depth = np.mean(depth_cpu[valid_mask])
-                    print(f"📸 Frame {frame_num:4d}: depth range [{min_depth:.3f}, {max_depth:.3f}], mean={mean_depth:.3f} - saved")
-                else:
-                    print(f"📸 Frame {frame_num:4d}: no valid depth data - saved")
+            #     # Calculate statistics
+            #     valid_mask = depth_cpu > 0.0
+            #     if np.any(valid_mask):
+            #         min_depth = np.min(depth_cpu[valid_mask])
+            #         max_depth = np.max(depth_cpu[valid_mask])
+            #         mean_depth = np.mean(depth_cpu[valid_mask])
+            #         print(f"📸 Frame {frame_num:4d}: depth range [{min_depth:.3f}, {max_depth:.3f}], mean={mean_depth:.3f} - saved")
+            #     else:
+            #         print(f"📸 Frame {frame_num:4d}: no valid depth data - saved")
             
             # Progress indicator  
             if frame_num % 50 == 0:

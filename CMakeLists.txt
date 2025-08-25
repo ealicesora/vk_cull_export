@@ -259,7 +259,6 @@ if(BUILD_PYTHON_EXT)
         # B2) 手动分支 - 使用统一的核心对象库
         add_library(vk2torch_ext MODULE 
           src/pybind/vk2torch_ext.cpp
-          src/pybridge/element_pybridge.cpp
           src/core/context_bootstrap.cpp
           src/external_memory.cpp
           src/thirdparty/vma_impl.cpp
@@ -277,7 +276,6 @@ if(BUILD_PYTHON_EXT)
       # B1) pybind11 CONFIG 分支 - 使用统一的核心对象库
       pybind11_add_module(vk2torch_ext 
         src/pybind/vk2torch_ext.cpp
-        src/pybridge/element_pybridge.cpp
         src/core/context_bootstrap.cpp
         src/external_memory.cpp
         src/thirdparty/vma_impl.cpp
