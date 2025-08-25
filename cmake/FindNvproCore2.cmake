@@ -11,7 +11,8 @@ find_path(NvproCore2_ROOT
     PATHS
     ${CMAKE_BINARY_DIR}/_deps
     ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/..
+    ${CMAKE_SOURCE_DIR}/../nv_repo
+    ${CMAKE_SOURCE_DIR}/nv_repo/
     ${CMAKE_SOURCE_DIR}/../..
 )
 
@@ -61,7 +62,7 @@ else()
                     set(NVPRO_GIT_URL ${GIT_BASE_URL}/nvpro-samples/nvpro_core2.git)
                 endif()
 
-                message(STATUS "Using GitHub nvpro_core2 repository")
+                message(STATUS "Usinpository")
             else()
                 # Internal repository - reconstruct URL preserving the protocol
                 string(REGEX MATCH "^[^/]+//[^/]+/" GIT_BASE_URL "${GIT_REPO_URL}")
@@ -92,7 +93,7 @@ else()
             PATHS
             ${CMAKE_BINARY_DIR}/_deps
             ${CMAKE_SOURCE_DIR}
-            ${CMAKE_SOURCE_DIR}/..
+            ${CMAKE_SOURCE_DIR}/nv_repo/
             ${CMAKE_SOURCE_DIR}/../..
         )
 

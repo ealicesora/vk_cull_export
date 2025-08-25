@@ -680,7 +680,9 @@ private:
         
         m_running = true;
         
+
         m_renderThread = std::thread([this]() {
+            m_app->run();
             try {
                 printf("Vk2TorchApp: Render thread started, running application loop\n");
                 
@@ -696,7 +698,7 @@ private:
                 }
                 
                 // Run the application loop
-                m_app->run();
+                // m_app->run();
                 
                 printf("Vk2TorchApp: Application loop exited\n");
             } catch (const std::exception& e) {

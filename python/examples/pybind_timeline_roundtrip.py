@@ -65,7 +65,7 @@ except ImportError as e:
 # Configuration
 W, H = 1024, 1024
 ASSET_ROOT = os.getcwd()  # Current working directory
-N_FRAMES = 1000
+N_FRAMES = 10
 
 def make_camera_matrices(frame_num: int) -> tuple:
     """
@@ -182,8 +182,8 @@ def main():
         print("⏳ Waiting for Vulkan scene initialization...")
         stream = cp.cuda.Stream(non_blocking=True)
         
-        with stream:
-            wait_timeline(sem_scene, 1, stream.ptr)
+        # with stream:
+        #     wait_timeline(sem_scene, 1, stream.ptr)
         cp.cuda.Stream.null.synchronize()
         print("✅ Scene ready - Vulkan rendering pipeline initialized")
         
@@ -219,6 +219,7 @@ def main():
             
             # 6.4) Wait for frame done at timeline value N
             with stream:
+                print('-----------------wait_timeline(sem_frame, frame_num, stream.ptr)')
                 wait_timeline(sem_frame, frame_num, stream.ptr)
             
             # 6.5) Process and save depth frame

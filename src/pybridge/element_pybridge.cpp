@@ -55,6 +55,9 @@ void ElementPyBridge::onAttach(nvapp::Application* app) {
     return;
   }
   
+  // Mark as ready immediately for headless mode (don't wait for first onRender)
+  markReady();
+  
   LOGI("PyBridge: Successfully attached with camera_ready timeline semaphore\n");
 }
 
@@ -88,7 +91,7 @@ void ElementPyBridge::onRender(VkCommandBuffer cmd) {
   
   // Wait for camera_ready semaphore with current expected frame
   if (m_cameraReadySemaphore != VK_NULL_HANDLE) {
-    if (waitForCameraReady(frameToRender, 16666667ULL)) {  // ~60fps timeout (16.6ms)
+    if (waitForCameraReady(frameToRender, UINT64_MAX)) {  // ~60fps timeout (16.6ms)
       LOGI("PyBridge: Camera ready for frame %lu\n", frameToRender);
     } else {
       LOGW("PyBridge: Camera ready timeout for frame %lu, proceeding anyway\n", frameToRender);

@@ -333,7 +333,7 @@ def wait_timeline(ext_sem: ctypes.c_void_p, value: int, stream_ptr: int) -> None
     
     result = ctx.libcuda.cuWaitExternalSemaphoresAsync(
         ctypes.byref(ext_sem), ctypes.byref(wait_params), 1,
-        ctypes.c_void_p(stream_ptr)# ctypes.c_void_p(stream_ptr)
+        ctypes.c_void_p(0)# ctypes.c_void_p(stream_ptr)
     )
     
     if result != CUDA_SUCCESS:

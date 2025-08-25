@@ -526,13 +526,6 @@ void LodClusters::onAttach(nvapp::Application* app)
     initRenderer(m_tweak.renderer);
     m_sceneInitialized = true;  // Mark scene as initialized
     LOGI("Scene initialization complete - ready for rendering\n");
-    
-    // Signal scene ready after all initialization is complete
-    if (m_externalMemoryManager) {
-      // Scene/rendering resources are ready → tell Python it can start
-      m_externalMemoryManager->signalSceneReady(1);
-      LOGI("Scene ready signaled (timeline=1)\n");
-    }
   }
 
   m_tweakLast          = m_tweak;
@@ -758,40 +751,40 @@ void LodClusters::handleChanges()
 void LodClusters::onRender(VkCommandBuffer cmd)
 {
 
-  bool verbose = false;
-  if(m_app->isHeadless())
-  {
-    // If we have external memory manager and scene is initialized, wait for connection
-    if (m_frameConfig.externalMemoryManager && m_sceneInitialized && 
-        !m_frameConfig.externalMemoryManager->isConnected()) 
-    {
-      if (!m_waitingForConnection) {
-        if (verbose)
-        {
-          LOGI("Scene initialized - waiting for Python client connection...\n");
-          LOGI("Blocking until Python connects to start rendering...\n");
-        }
+  bool verbose = true;
+  // if(m_app->isHeadless())
+  // {
+  //   // If we have external memory manager and scene is initialized, wait for connection
+  //   if (m_frameConfig.externalMemoryManager && m_sceneInitialized && 
+  //       !m_frameConfig.externalMemoryManager->isConnected()) 
+  //   {
+  //     if (!m_waitingForConnection) {
+  //       if (verbose)
+  //       {
+  //         LOGI("Scene initialized - waiting for Python client connection...\n");
+  //         LOGI("Blocking until Python connects to start rendering...\n");
+  //       }
 
         
-        // In headless mode, block synchronously
-        if (m_app->isHeadless()) {
-          if (m_frameConfig.externalMemoryManager->acceptClient()) {
-            LOGI("Python client connected! Starting rendering...\n");
-          } else {
-            LOGE("Failed to accept Python client\n");
-            return;
-          }
-        } else {
-          // In GUI mode, just return and wait
-          m_waitingForConnection = true;
-          return;
-        }
-      } else {
-        // Still waiting in GUI mode
-        return;
-      }
-    }
-   }
+  //       // In headless mode, block synchronously
+  //       if (m_app->isHeadless()) {
+  //         if (m_frameConfig.externalMemoryManager->acceptClient()) {
+  //           LOGI("Python client connected! Starting rendering...\n");
+  //         } else {
+  //           LOGE("Failed to accept Python client\n");
+  //           return;
+  //         }
+  //       } else {
+  //         // In GUI mode, just return and wait
+  //         m_waitingForConnection = true;
+  //         return;
+  //       }
+  //     } else {
+  //       // Still waiting in GUI mode
+  //       return;
+  //     }
+  //   }
+  //  }
   // Reset waiting flag once connected
   if (m_waitingForConnection && m_frameConfig.externalMemoryManager && 
       m_frameConfig.externalMemoryManager->isConnected()) {
@@ -799,7 +792,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     if (verbose)
     LOGI("Python client connected! Starting rendering...\n");
   }
-
+   LOGI("in on render");
   static int renderCount = 0;
   static int externalFrameCount = 0;
   if (renderCount < 10 || renderCount % 100 == 0) {
@@ -809,17 +802,6 @@ void LodClusters::onRender(VkCommandBuffer cmd)
   renderCount++;
   
   double time = m_clock.getSeconds();
-
-  // Wait for camera ready at the beginning of each frame (before actual rendering)
-  if (m_externalMemoryManager) {
-    const uint64_t frameValue = m_externalMemoryManager->currentFrameValue();
-    // Block CPU until Python pushes camera_ready_timeline to frameValue
-    if (!m_externalMemoryManager->waitCameraReady(frameValue)) {
-      LOGW("waitCameraReady(%llu) timeout or failed, continue with previous camera.\n", frameValue);
-    }
-    // Camera matrices: if Python calls set_camera_matrices() before each frame, 
-    // we can use m_useOverrideCamera branch directly
-  }
 
   m_resources.beginFrame(m_app->getFrameCycleIndex());
 
@@ -1037,12 +1019,91 @@ void LodClusters::onRender(VkCommandBuffer cmd)
         // For the first few frames after connection, don't wait for camera ready
         // This allows the render loop to start and Python to synchronize
 
-        // Camera matrices: Python calls set_camera_matrices() which sets m_useOverrideCamera
-        // The waitCameraReady() was already called at the top of onRender()
-        // No more socket communication - everything goes through pybind11 and timeline semaphores
+        // Wait for Python to signal camera ready
+        // This is a synchronous wait - the frame will not proceed until Python provides camera data
         if (verbose)
-        LOGI("Frame %lu: Camera ready waited at frame start, using override camera: %s\n", 
-             frameNumber, m_useOverrideCamera ? "YES" : "NO");
+        LOGI("Frame %lu: Waiting for camera ready signal...\n", frameNumber);
+
+        if(!m_frameConfig.externalMemoryManager->waitForCameraReady(frameNumber))
+        {
+          LOGW("Frame %lu: Camera ready timeout, proceeding with existing camera data\n", frameNumber);
+        }
+        else
+        {
+          if (verbose)
+          LOGI("Frame %lu: Camera ready signal received, now receiving camera matrices...\n", frameNumber);
+          
+          // Receive camera matrices from Python via socket
+          float viewMatrix[16], projMatrix[16];
+          if (false || m_frameConfig.externalMemoryManager->receiveCameraMatrices(viewMatrix, projMatrix)) {
+            // Print received matrices in detail
+            if (verbose)
+            {
+              LOGI("Frame %lu: Received camera matrices from Python:\n", frameNumber);
+              LOGI("  View Matrix:\n");
+              for (int row = 0; row < 4; row++) {
+                LOGI("    [%8.4f %8.4f %8.4f %8.4f]\n", 
+                    viewMatrix[row*4], viewMatrix[row*4+1], 
+                    viewMatrix[row*4+2], viewMatrix[row*4+3]);
+              }
+              LOGI("  Projection Matrix:\n");
+              for (int row = 0; row < 4; row++) {
+                LOGI("    [%8.4f %8.4f %8.4f %8.4f]\n",
+                    projMatrix[row*4], projMatrix[row*4+1],
+                    projMatrix[row*4+2], projMatrix[row*4+3]);
+              }
+            }
+
+            
+            // Convert from float arrays to glm::mat4 (column-major)
+            glm::mat4 pythonView = glm::mat4(
+              viewMatrix[0], viewMatrix[1], viewMatrix[2], viewMatrix[3],
+              viewMatrix[4], viewMatrix[5], viewMatrix[6], viewMatrix[7],
+              viewMatrix[8], viewMatrix[9], viewMatrix[10], viewMatrix[11],
+              viewMatrix[12], viewMatrix[13], viewMatrix[14], viewMatrix[15]
+            );
+            
+            glm::mat4 pythonProj = glm::mat4(
+              projMatrix[0], projMatrix[1], projMatrix[2], projMatrix[3],
+              projMatrix[4], projMatrix[5], projMatrix[6], projMatrix[7],
+              projMatrix[8], projMatrix[9], projMatrix[10], projMatrix[11],
+              projMatrix[12], projMatrix[13], projMatrix[14], projMatrix[15]
+            );
+            
+            // Override the frame constants with Python's camera matrices
+            frameConstants.viewMatrix = pythonView;
+            frameConstants.projMatrix = pythonProj;
+            frameConstants.viewMatrixI = glm::inverse(pythonView);
+            frameConstants.projMatrixI = glm::inverse(pythonProj);
+            frameConstants.viewProjMatrix = pythonProj * pythonView;
+            frameConstants.viewProjMatrixI = glm::inverse(frameConstants.viewProjMatrix);
+            
+            // Update derived camera properties
+            frameConstants.viewPos = frameConstants.viewMatrixI[3];  // Camera position
+            frameConstants.viewDir = -frameConstants.viewMatrixI[2]; // Camera direction
+            frameConstants.viewPlane = frameConstants.viewDir;
+            frameConstants.viewPlane.w = -glm::dot(glm::vec3(frameConstants.viewPos), glm::vec3(frameConstants.viewDir));
+            
+            // Update sky matrix
+            glm::mat4 viewNoTrans = pythonView;
+            viewNoTrans[3] = {0.0f, 0.0f, 0.0f, 1.0f};
+            frameConstants.skyProjMatrixI = glm::inverse(pythonProj * viewNoTrans);
+            if (verbose)
+            {
+              // Print extracted camera information
+              LOGI("  Extracted Camera Position: [%.4f, %.4f, %.4f]\n",
+                  frameConstants.viewPos.x, frameConstants.viewPos.y, frameConstants.viewPos.z);
+              LOGI("  Extracted Camera Direction: [%.4f, %.4f, %.4f]\n",
+                  frameConstants.viewDir.x, frameConstants.viewDir.y, frameConstants.viewDir.z);
+              
+              LOGI("Frame %lu: Successfully updated frame constants with Python camera matrices\n", frameNumber);
+            }
+
+          
+          } else {
+            LOGW("Frame %lu: Failed to receive camera matrices, using default camera\n", frameNumber);
+          }
+        }
 
           
         
