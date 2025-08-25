@@ -170,7 +170,7 @@ LodClusters::LodClusters(const Info& info)
 
   m_rendererConfig.twoSided = true;
   m_tweak.useStreaming = false;
-  m_rendererConfig.useCulling = false;
+  m_rendererConfig.useCulling = true;
   // 只保留一份场景副本
   m_sceneGridConfig.numCopies = 1;
   // 下面这行可加可不加，反正 numCopies=1 时不起作用
