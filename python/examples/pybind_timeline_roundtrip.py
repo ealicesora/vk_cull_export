@@ -127,70 +127,33 @@ except ImportError as e:
     sys.exit(1)
 
 # Configuration
-W, H = 1024, 1024
+W, H = 1000, 1000
 ASSET_ROOT = os.getcwd()  # Current working directory
-N_FRAMES = 10
+N_FRAMES = 1000
 
 def make_camera_matrices(frame_num: int) -> tuple:
-    """
-    Generate orbital camera matrices for given frame
+
+    R = np.array([[ 0.98822485,  0.11374114, -0.10234546],
+                [-0.11979481,  0.99127023, -0.05506844],
+                [ 0.09518846,  0.06668046,  0.99322348]], dtype=np.float32)
+    T = np.array([-2.80552141, -1.27673587,  3.06543639 + (frame_num-1) * 0.0], dtype=np.float32)
+
+
+    Fx = 1208.1880959114053
+    Fy = 1209.669871748316
+
+    W  = 1000
+    H  = 1000
+    Cx = W / 2
+    Cy = H / 2
+    znear, zfar = 0.1, 1000.0
+
+    view_flat, proj_flat = to_vulkan_viewproj_match_nvdiffrast(
+        R, T, Fx, Fy, Cx, Cy, W, H, znear, zfar
+    )
+
     
-    Args:
-        frame_num: Frame number for animation
-        
-    Returns:
-        Tuple of (projection_matrix, view_matrix) as float32 numpy arrays (row-major)
-    """
-    # Orbital camera parameters
-    t = frame_num * (2.0 * math.pi / N_FRAMES)  # Complete orbit over N_FRAMES
-    radius = 3.0
-    height = 1.5
-    
-    # Camera position (orbital motion)
-    eye = np.array([
-        math.cos(t) * radius,
-        height, 
-        math.sin(t) * radius
-    ], dtype=np.float32)
-    
-    # Look at center
-    center = np.array([0.0, 0.5, 0.0], dtype=np.float32)
-    up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-    
-    # Build view matrix (right-handed, column-major internally, then convert to row-major)
-    def normalize(v):
-        norm = np.linalg.norm(v)
-        return v / (norm + 1e-8)
-    
-    f = normalize(center - eye)  # Forward
-    s = normalize(np.cross(f, up))  # Right  
-    u = np.cross(s, f)  # Up
-    
-    # View matrix (column-major)
-    view_col_major = np.eye(4, dtype=np.float32)
-    view_col_major[0, :3] = s
-    view_col_major[1, :3] = u
-    view_col_major[2, :3] = -f
-    view_col_major[:3, 3] = -view_col_major[:3, :3] @ eye
-    
-    # Perspective projection matrix (column-major)  
-    fovy = math.radians(60.0)
-    aspect = float(W) / float(H)
-    near, far = 0.1, 100.0
-    
-    f_val = 1.0 / math.tan(fovy / 2.0)
-    proj_col_major = np.zeros((4, 4), dtype=np.float32)
-    proj_col_major[0, 0] = f_val / aspect
-    proj_col_major[1, 1] = f_val
-    proj_col_major[2, 2] = far / (far - near)
-    proj_col_major[2, 3] = (-far * near) / (far - near)
-    proj_col_major[3, 2] = 1.0
-    
-    # Convert to row-major for pybind11 (it will convert back to column-major internally)
-    proj_row_major = proj_col_major.T
-    view_row_major = view_col_major.T
-    
-    return proj_row_major, view_row_major
+    return proj_flat.reshape([4,4]), view_flat.reshape([4,4])
 
 def main():
     """Main timeline semaphore roundtrip example"""
@@ -201,7 +164,7 @@ def main():
     try:
         # 1) Create Vk2TorchApp with real 3D rendering
         print(f"📱 Creating Vk2TorchApp ({W}x{H}) with asset root: {ASSET_ROOT}")
-        app = ext.Vk2TorchApp(W, H, True, "", ASSET_ROOT)  # raster=True, no scene override, use asset root
+        app = ext.Vk2TorchApp(W, H, True, "./_downloaded_resources/matrix_city_new_zup.glb", ASSET_ROOT)  # raster=True, no scene override, use asset root
         print("✅ Vk2TorchApp created successfully")
         
         # 2) Get complete interop info with all FDs (duplicated for Python ownership)
@@ -286,11 +249,13 @@ def main():
             
             # 6.5) Process and save depth frame
             depth_float = depth_d24_to_float(u32)  # Convert D24 to float32 [0,1]
-            
+            print(depth_float.shape)
             # Save selected frames
+            
             # if frame_num % 100 == 0 or frame_num <= 10 or frame_num > N_FRAMES - 10:
             #     # Copy to CPU for saving
             #     depth_cpu = cp.asnumpy(depth_float)
+            #     save_depth_png(depth_cpu,f"out_depth/depth_{frame_num:04d}.png")
             #     np.save(f"out_depth/depth_{frame_num:04d}.npy", depth_cpu)
                 
             #     # Calculate statistics
@@ -337,6 +302,134 @@ def main():
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+def save_depth_png(
+    depth,                  # torch.Tensor 或 numpy.ndarray，形状可为 (H,W), (1,H,W), (H,W,1)
+    filename: str,
+    *,
+    normalize: bool = True,
+    min_val: float | None = None,
+    max_val: float | None = None,
+    invert: bool = False,           # 若你用 reversed-Z（近=大），想让“近更亮”，可设 True
+    robust_percentile: float = 0.5, # 百分位裁剪，0.5 表示 [0.5%, 99.5%]
+    bitdepth: int = 16              # 16 或 8；建议 16
+) -> bool:
+    """
+    将单通道深度保存为 PNG。返回 True/False 表示是否保存成功。
+    - normalize=True 时：用 (min,max) 将深度线性映射到 [0,1]（会先按百分位裁剪减少异常值影响）。
+    - min_val/max_val 可手动覆盖自动范围。
+    - invert=True 则做 1 - x（常用于 reversed-Z: 近=大，想让近=亮）。
+    - bitdepth: 16（推荐）或 8。
+    """
+    try:
+        import numpy as np
+        # 尽量用已存在的环境变量/对象
+        has_cv = globals().get("HAS_OPENCV", False)
+        if has_cv:
+            import cv2
+        else:
+            cv2 = None
+
+        # 1) 拿到 numpy，去掉多余维度
+        if "torch" in str(type(depth)):  # 粗略判断是否为 torch.Tensor
+            # 防止梯度/显存问题
+            depth_np = depth.detach().to("cpu").numpy()
+        else:
+            depth_np = np.asarray(depth)
+
+        # squeeze 到 (H,W)
+        if depth_np.ndim == 3:
+            # 允许 [1,H,W] 或 [H,W,1]
+            if depth_np.shape[0] == 1:
+                depth_np = depth_np[0]
+            elif depth_np.shape[2] == 1:
+                depth_np = depth_np[:, :, 0]
+            else:
+                raise ValueError(f"Depth tensor must be single-channel; got shape {depth_np.shape}")
+        elif depth_np.ndim != 2:
+            raise ValueError(f"Depth tensor must be 2D or single-channel 3D; got ndim={depth_np.ndim}")
+
+        depth_np = np.asanyarray(depth_np).astype(np.float32, copy=False)
+
+        # 2) 处理 NaN/Inf
+        finite_mask = np.isfinite(depth_np)
+        if not np.any(finite_mask):
+            if 'logger' in globals():
+                logger.error("Depth has no finite values.")
+            return False
+
+        # 3) 计算归一化范围
+        lo, hi = (min_val, max_val)
+        if normalize:
+            vals = depth_np[finite_mask]
+            # 百分位裁剪（减少极端值影响）
+            p = float(robust_percentile)
+            if lo is None:
+                lo = np.percentile(vals, p) if p > 0 else float(np.min(vals))
+            if hi is None:
+                hi = np.percentile(vals, 100.0 - p) if p > 0 else float(np.max(vals))
+        else:
+            # 不做归一化就直接 clamp 到 [0,1]
+            lo = 0.0 if lo is None else lo
+            hi = 1.0 if hi is None else hi
+
+        # 防止 lo==hi
+        if hi <= lo:
+            # 退化情况：全图近似常数
+            if 'logger' in globals():
+                logger.warning(f"Depth range collapsed (lo={lo}, hi={hi}), producing a constant image.")
+            norm = np.zeros_like(depth_np, dtype=np.float32)
+        else:
+            norm = (depth_np - lo) / (hi - lo)
+
+        # 4) 反转（常用于 reversed-Z：近=大 → 近更亮）
+        if invert:
+            norm = 1.0 - norm
+
+        # 5) 裁剪到 [0,1]，并将非有限值置 0
+        norm[~finite_mask] = 0.0
+        norm = np.clip(norm, 0.0, 1.0)
+
+        # 6) 转整数并保存
+        if bitdepth == 16:
+            img = np.round(norm * 65535.0).astype(np.uint16)
+        elif bitdepth == 8:
+            img = np.round(norm * 255.0).astype(np.uint8)
+        else:
+            raise ValueError("bitdepth must be 8 or 16")
+
+        # OpenCV 保存（shape 必须是 (H,W)）
+        if has_cv and cv2 is not None:
+            ok = cv2.imwrite(filename, img)
+            if ok:
+                if 'logger' in globals():
+                    logger.info(f"Saved depth to {filename} ({bitdepth}-bit PNG)")
+                return True
+        else:
+            # PIL 兜底
+            try:
+                from PIL import Image
+                if bitdepth == 16:
+                    pil_img = Image.fromarray(img, mode="I;16")
+                else:
+                    pil_img = Image.fromarray(img, mode="L")
+                pil_img.save(filename)
+                if 'logger' in globals():
+                    logger.info(f"Saved depth to {filename} using PIL ({bitdepth}-bit)")
+                return True
+            except ImportError:
+                if 'logger' in globals():
+                    logger.error("No image library available (OpenCV or PIL)")
+                return False
+
+        return False
+
+    except Exception as e:
+        if 'logger' in globals():
+            logger.error(f"Failed to save depth PNG: {e}")
+        return False
+
+
 
 if __name__ == "__main__":
     print("VK2Torch Pybind11 Timeline Roundtrip")

@@ -230,8 +230,8 @@ public:
         glm::mat4 proj(1.0f), view(1.0f);
         for (int r = 0; r < 4; ++r) {
             for (int c = 0; c < 4; ++c) {
-                proj[c][r] = proj_data[r * 4 + c];  // row-major -> column-major
-                view[c][r] = view_data[r * 4 + c];
+                proj[r][c] = proj_data[r * 4 + c];  // row-major -> column-major
+                view[r][c] = view_data[r * 4 + c];
             }
         }
         
