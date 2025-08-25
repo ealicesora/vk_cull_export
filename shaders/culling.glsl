@@ -85,13 +85,13 @@ bool intersectFrustum(vec3 bboxMin, vec3 bboxMax, mat4 worldTM, out vec4 oClipmi
   oClipmin = vec4(clamp(clipMin.xy, vec2(-1), vec2(1)), clipMin.zw);
   oClipmax = vec4(clamp(clipMax.xy, vec2(-1), vec2(1)), clipMax.zw);
 
-  //return true;
+  // return true;
   return bits == 0;
 }
 
 bool intersectHiz(vec4 clipMin, vec4 clipMax)
 {
-  return true;
+  //return true;
   clipMin.xy = clipMin.xy * 0.5 + 0.5;
   clipMax.xy = clipMax.xy * 0.5 + 0.5;
   

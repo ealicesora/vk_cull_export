@@ -136,7 +136,7 @@ def make_camera_matrices(frame_num: int) -> tuple:
     R = np.array([[ 0.98822485,  0.11374114, -0.10234546],
                 [-0.11979481,  0.99127023, -0.05506844],
                 [ 0.09518846,  0.06668046,  0.99322348]], dtype=np.float32)
-    T = np.array([-2.80552141, -1.27673587,  3.06543639 + (frame_num-1) * 0.1], dtype=np.float32)
+    T = np.array([-2.80552141, -1.27673587,  3.06543639 + (frame_num-1) * 0.99], dtype=np.float32)
 
 
     Fx = 1208.1880959114053
@@ -193,7 +193,7 @@ def main():
         sem_scene = import_timeline_semaphore_fd(int(info['scene_ready_sem_fd']))
         sem_camera = import_timeline_semaphore_fd(int(info['camera_ready_sem_fd']))
         sem_frame = import_timeline_semaphore_fd(int(info['frame_done_sem_fd']))
-        print("✅ Timeline semaphores imported")
+        # print("✅ Timeline semaphores imported")
         
         # NO need to Close FDs !!!!
         # for fd_key in ['depth_mem_fd', 'scene_ready_sem_fd', 'camera_ready_sem_fd', 'frame_done_sem_fd']:
@@ -212,9 +212,9 @@ def main():
         # with stream:
         #     wait_timeline(sem_scene, 1, stream.ptr)
         cp.cuda.Stream.null.synchronize()
-        print("✅ Scene ready - Vulkan rendering pipeline initialized")
+        # print("✅ Scene ready - Vulkan rendering pipeline initialized")
         
-        # 5) Set up CuPy view of depth buffer (pitched for proper row alignment)
+        5) Set up CuPy view of depth buffer (pitched for proper row alignment)
         print(f"🖼️  Creating depth buffer view: {width}x{height}, pitch={pitch}")
         
         # Create pitched array view (full width including padding)
@@ -222,20 +222,13 @@ def main():
         
         # Slice to actual image dimensions (remove row padding)
         u32 = u32_pitched[:, :width] 
-        
-        print("✅ Depth buffer CuPy view created")
-        
-        # 6) Frame rendering loop with timeline semaphore coordination
-        print(f"🎥 Starting {N_FRAMES} frame rendering loop...")
-        print("    Timeline coordination: set_camera_matrices() → signal camera_ready=N → wait frame_done=N")
-        
-        os.makedirs("out_depth", exist_ok=True)
-        
-        
+        _ = depth_d24_to_float(u32)
+    
+        os.makedirs("out_depth", exist_ok=True)    
         
         app.headless_init()
         # compile operator
-        _ = depth_d24_to_float(u32)
+        
         cp.cuda.Stream.null.synchronize()
         time.sleep(1.0)
         start_time = time.time()
